@@ -1,0 +1,1 @@
+from .hyperfast import HyperFastClassifier
