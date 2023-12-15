@@ -2,6 +2,8 @@
 
 [HyperFast](https://openreview.net/forum?id=VRBhaU8IDz) is a hypernetwork designed for fast classification of tabular data, capable of scaling to large datasets. Utilizing a meta-trained hypernetwork, HyperFast generates a dataset-specific target network in a single forward pass, eliminating the need for time-consuming model training.
 
+**Warning: The current default hyperparameters provide the fastest inference but the least accurate. Details about proper tuning and a better parameter configuration will be provided shortly. The scikit-learn-like interface is under development and expect further improvements.**
+
 
 ## Installation
 
@@ -43,6 +45,7 @@ predictions = model.predict(X_test)
 accuracy = accuracy_score(y_test, predictions)
 print(f"Accuracy: {accuracy * 100:.2f}%")
 ```
+
 
 ## License
 
