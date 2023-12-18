@@ -229,7 +229,7 @@ def fine_tune_main_network(
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
-            print(f"Step: [{step+1}/{optimize_steps}], Loss: {loss.item()}")
+            #print(f"Step: [{step+1}/{optimize_steps}], Loss: {loss.item()}")
 
         if scheduler is not None:
             if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):

@@ -40,13 +40,13 @@ class HyperFastClassifier(BaseEstimator):
     def __init__(
         self,
         device="cuda:0",
-        n_ensemble=1,
+        n_ensemble=16,
         batch_size=2048,
         nn_bias=False,
-        optimization=None,
-        optimize_steps=0,
+        optimization='ensemble_optimize',
+        optimize_steps=64,
         torch_pca=True,
-        seed=99,
+        seed=3,
     ):
         seed_everything(seed)
         self.device = device
@@ -57,6 +57,7 @@ class HyperFastClassifier(BaseEstimator):
         self.optimize_steps = optimize_steps
         self.cfg = self._load_config(config, device, torch_pca, nn_bias)
         self.model = self._initialize_model(self.cfg)
+        
 
     def _load_config(self, config, device, torch_pca, nn_bias):
         cfg = SimpleNamespace(**config)
