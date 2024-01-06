@@ -2,8 +2,6 @@
 
 [HyperFast](https://openreview.net/forum?id=VRBhaU8IDz) is a hypernetwork designed for fast classification of tabular data, capable of scaling to large datasets. Utilizing a meta-trained hypernetwork, HyperFast generates a dataset-specific target network in a single forward pass, eliminating the need for time-consuming model training.
 
-**Warning: The current default hyperparameters provide the fastest inference but the least accurate. Details about proper tuning and a better parameter configuration will be provided shortly. The scikit-learn-like interface is under development and expect further improvements.**
-
 
 ## Installation
 
@@ -46,6 +44,22 @@ accuracy = accuracy_score(y_test, predictions)
 print(f"Accuracy: {accuracy * 100:.2f}%")
 ```
 
+
+**Warning**: 
+* The current default hyperparameters provide medium speed-accuracy performance.
+* For the fastest inference (but less accurate) set ``n_ensemble=1`` and ``optimization=None``.
+* For slower but most accurate predictions, optimize the parameters of HyperFast for each dataset. In this case, we recommend the following search space:
+
+```python
+param_grid = {
+    'n_ensemble': [1, 4, 8, 16, 32],
+    'batch_size': [1024, 2048],
+    'nn_bias': [True, False],
+    'optimization': [None, 'optimize', 'ensemble_optimize'],
+    'optimize_steps': [1, 4, 8, 16, 32, 64, 128],
+    'seed': list(range(1, 10))
+}
+```
 
 ## License
 
