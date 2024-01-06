@@ -229,7 +229,7 @@ def fine_tune_main_network(
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
-            #print(f"Step: [{step+1}/{optimize_steps}], Loss: {loss.item()}")
+            # print(f"Step: [{step+1}/{optimize_steps}], Loss: {loss.item()}")
 
         if scheduler is not None:
             if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
@@ -276,7 +276,8 @@ Description: Snippet of various clustering implementations only using Pyth
 Full project repository: https://github.com/JosueCom/Lign (A graph deep learning framework that works alongside Pyth)
 """
 
-def distance_matrix(x, y=None, p=2): 
+
+def distance_matrix(x, y=None, p=2):
     y = x if type(y) == type(None) else y
 
     n = x.size(0)

@@ -8,5 +8,5 @@ config = {
     "max_categories": 46,
     "lr": 0.0001,
     "model_url": "https://figshare.com/ndownloader/files/43484094",
-    "model_path": "hyperfast.ckpt"
+    "model_path": "hyperfast.ckpt",
 }

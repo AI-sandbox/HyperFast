@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from types import SimpleNamespace
 from .config import config
 from sklearn.base import BaseEstimator
+from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -43,21 +44,23 @@ class HyperFastClassifier(BaseEstimator):
         n_ensemble=16,
         batch_size=2048,
         nn_bias=False,
-        optimization='ensemble_optimize',
+        optimization="ensemble_optimize",
         optimize_steps=64,
         torch_pca=True,
         seed=3,
     ):
-        seed_everything(seed)
         self.device = device
         self.n_ensemble = n_ensemble
         self.batch_size = batch_size
         self.nn_bias = nn_bias
         self.optimization = optimization
         self.optimize_steps = optimize_steps
-        self.cfg = self._load_config(config, device, torch_pca, nn_bias)
-        self.model = self._initialize_model(self.cfg)
-        
+        self.torch_pca = torch_pca
+        self.seed = seed
+
+        seed_everything(self.seed)
+        self._cfg = self._load_config(config, self.device, self.torch_pca, self.nn_bias)
+        self._model = self._initialize_model(self._cfg)
 
     def _load_config(self, config, device, torch_pca, nn_bias):
         cfg = SimpleNamespace(**config)
@@ -70,7 +73,7 @@ class HyperFastClassifier(BaseEstimator):
         model = HyperFast(cfg).to(cfg.device)
         if not os.path.exists(cfg.model_path):
             self._download_model(cfg.model_url, cfg.model_path)
-        
+
         try:
             print(f"Loading model from {cfg.model_path}...", flush=True)
             model.load_state_dict(
@@ -81,39 +84,43 @@ class HyperFastClassifier(BaseEstimator):
             raise FileNotFoundError(f"Model file not found at {cfg.model_path}") from e
         model.eval()
         return model
-    
+
     def _download_model(self, url, local_path):
-        print(f"Downloading model from {url}, since no model was found at {local_path}", flush=True)
+        print(
+            f"Downloading model from {url}, since no model was found at {local_path}",
+            flush=True,
+        )
         response = requests.get(url)
         if response.status_code == 200:
-            with open(local_path, 'wb') as f:
+            with open(local_path, "wb") as f:
                 f.write(response.content)
             print(f"Model downloaded and saved to {local_path}")
         else:
             raise ConnectionError(f"Failed to download the model from {url}")
 
-
-    def _preprocess_fitting_data(self, x: np.ndarray) -> np.ndarray:
+    def _preprocess_fitting_data(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        x = np.array(x, dtype=np.float32).copy()
+        y = np.array(y, dtype=np.int64).copy()
         # Impute missing values for numerical features with the mean
-        self.num_imputer = SimpleImputer(missing_values=np.nan, strategy="mean")
-        self.all_feature_idxs = np.arange(x.shape[1])
-        self.numerical_feature_idxs = np.setdiff1d(
-            self.all_feature_idxs, self.cat_features
+        self._num_imputer = SimpleImputer(missing_values=np.nan, strategy="mean")
+        self._all_feature_idxs = np.arange(x.shape[1])
+        self._numerical_feature_idxs = np.setdiff1d(
+            self._all_feature_idxs, self._cat_features
         )
-        if len(self.numerical_feature_idxs) > 0:
-            self.num_imputer.fit(x[:, self.numerical_feature_idxs])
-            x[:, self.numerical_feature_idxs] = self.num_imputer.transform(
-                x[:, self.numerical_feature_idxs]
+        if len(self._numerical_feature_idxs) > 0:
+            self._num_imputer.fit(x[:, self._numerical_feature_idxs])
+            x[:, self._numerical_feature_idxs] = self._num_imputer.transform(
+                x[:, self._numerical_feature_idxs]
             )
 
-        if len(self.cat_features) > 0:
+        if len(self._cat_features) > 0:
             # Impute missing values for categorical features with the most frequent category
             self.cat_imputer = SimpleImputer(
                 missing_values=np.nan, strategy="most_frequent"
             )
-            self.cat_imputer.fit(x[:, self.cat_features])
-            x[:, self.cat_features] = self.cat_imputer.transform(
-                x[:, self.cat_features]
+            self.cat_imputer.fit(x[:, self._cat_features])
+            x[:, self._cat_features] = self.cat_imputer.transform(
+                x[:, self._cat_features]
             )
 
             # One-hot encode categorical features
@@ -123,7 +130,7 @@ class HyperFastClassifier(BaseEstimator):
                     (
                         "cat",
                         OneHotEncoder(sparse=False, handle_unknown="ignore"),
-                        self.cat_features,
+                        self._cat_features,
                     )
                 ],
                 remainder="passthrough",
@@ -132,22 +139,25 @@ class HyperFastClassifier(BaseEstimator):
             x = self.one_hot_encoder.transform(x)
 
         # Standardize data
-        self.scaler = StandardScaler()
-        self.scaler.fit(x)
-        x = self.scaler.transform(x)
-        return x
+        self._scaler = StandardScaler()
+        self._scaler.fit(x)
+        x = self._scaler.transform(x)
+        return torch.tensor(x, dtype=torch.float).to(self.device), torch.tensor(
+            y, dtype=torch.long
+        ).to(self.device)
 
     def _preprocess_test_data(self, x_test):
+        x_test = np.array(x_test, dtype=np.float32).copy()
         # Impute missing values for numerical features with the mean
-        if len(self.numerical_feature_idxs) > 0:
-            x_test[:, self.numerical_feature_idxs] = self.num_imputer.transform(
-                x_test[:, self.numerical_feature_idxs]
+        if len(self._numerical_feature_idxs) > 0:
+            x_test[:, self._numerical_feature_idxs] = self._num_imputer.transform(
+                x_test[:, self._numerical_feature_idxs]
             )
 
-        if len(self.cat_features) > 0:
+        if len(self._cat_features) > 0:
             # Impute missing values for categorical features with the most frequent category
-            x_test[:, self.cat_features] = self.cat_imputer.transform(
-                x_test[:, self.cat_features]
+            x_test[:, self._cat_features] = self.cat_imputer.transform(
+                x_test[:, self._cat_features]
             )
 
             # One-hot encode categorical features
@@ -155,31 +165,31 @@ class HyperFastClassifier(BaseEstimator):
             x_test = self.one_hot_encoder.transform(x_test)
 
         # Standardize data
-        x_test = self.scaler.transform(x_test)
+        x_test = self._scaler.transform(x_test)
         return x_test
 
     def _initialize_fit_attributes(self):
-        self.rfs = []
-        self.pcas = []
-        self.main_networks = []
-        self.X_preds = []
-        self.y_preds = []
+        self._rfs = []
+        self._pcas = []
+        self._main_networks = []
+        self._X_preds = []
+        self._y_preds = []
 
     def _sample_data(self, X, y):
         indices = torch.randperm(len(X))[: self.batch_size]
         X_pred, y_pred = X[indices].flatten(start_dim=1), y[indices]
-        if X_pred.shape[0] < self.cfg.n_dims:
-            n_repeats = math.ceil(self.cfg.n_dims / X_pred.shape[0])
+        if X_pred.shape[0] < self._cfg.n_dims:
+            n_repeats = math.ceil(self._cfg.n_dims / X_pred.shape[0])
             X_pred = torch.repeat_interleave(X_pred, n_repeats, axis=0)
             y_pred = torch.repeat_interleave(y_pred, n_repeats, axis=0)
         return X_pred, y_pred
 
     def _store_network(self, rf, pca, main_network, X_pred, y_pred):
-        self.rfs.append(rf)
-        self.pcas.append(pca)
-        self.main_networks.append(main_network)
-        self.X_preds.append(X_pred)
-        self.y_preds.append(y_pred)
+        self._rfs.append(rf)
+        self._pcas.append(pca)
+        self._main_networks.append(main_network)
+        self._X_preds.append(X_pred)
+        self._y_preds.append(y_pred)
 
     def fit(self, X, y, cat_features=[]):
         """
@@ -190,28 +200,31 @@ class HyperFastClassifier(BaseEstimator):
             y (array-like): Target values.
             cat_features (list, optional): List of categorical features. Defaults to an empty list.
         """
-        self.cat_features = cat_features
-        X = self._preprocess_fitting_data(X)
-        self._initialize_fit_attributes()
+        seed_everything(self.seed)
+        X, y = check_X_y(X, y)
+        self._cat_features = cat_features
+        self.n_features_in_ = X.shape[1]
+        self.classes_ = np.unique(y)
 
-        X, y = torch.Tensor(X).to(self.device), torch.Tensor(y).long().to(self.device)
+        X, y = self._preprocess_fitting_data(X, y)
+        self._initialize_fit_attributes()
 
         for n in range(self.n_ensemble):
             X_pred, y_pred = self._sample_data(X, y)
             self.n_classes_ = len(torch.unique(y_pred).cpu().numpy())
 
-            rf, pca, main_network = self.model(X_pred, y_pred, self.n_classes_)
+            rf, pca, main_network = self._model(X_pred, y_pred, self.n_classes_)
 
             if self.optimization == "ensemble_optimize":
-                rf, pca, main_network, self.model.nn_bias = fine_tune_main_network(
-                    self.cfg,
+                rf, pca, main_network, self._model.nn_bias = fine_tune_main_network(
+                    self._cfg,
                     X_pred,
                     y_pred,
                     self.n_classes_,
                     rf,
                     pca,
                     main_network,
-                    self.model.nn_bias,
+                    self._model.nn_bias,
                     self.device,
                     self.optimize_steps,
                     self.batch_size,
@@ -219,21 +232,21 @@ class HyperFastClassifier(BaseEstimator):
             self._store_network(rf, pca, main_network, X_pred, y_pred)
 
         if self.optimization == "optimize" and self.optimize_steps > 0:
-            assert len(self.main_networks) == 1
+            assert len(self._main_networks) == 1
             (
-                self.rfs[0],
-                self.pcas[0],
-                self.main_networks[0],
-                self.model.nn_bias,
+                self._rfs[0],
+                self._pcas[0],
+                self._main_networks[0],
+                self._model.nn_bias,
             ) = fine_tune_main_network(
-                self.cfg,
+                self._cfg,
                 X,
                 y,
                 self.n_classes_,
-                self.rfs[0],
-                self.pcas[0],
-                self.main_networks[0],
-                self.model.nn_bias,
+                self._rfs[0],
+                self._pcas[0],
+                self._main_networks[0],
+                self._model.nn_bias,
                 self.device,
                 self.optimize_steps,
                 self.batch_size,
@@ -242,20 +255,22 @@ class HyperFastClassifier(BaseEstimator):
         return self
 
     def predict_proba(self, X):
+        check_is_fitted(self)
+        X = check_array(X)
         X = self._preprocess_test_data(X)
         with torch.no_grad():
             X = torch.Tensor(X).to(self.device)
             orig_X = X
             yhats = []
-            for jj in range(len(self.main_networks)):
-                main_network = self.main_networks[jj]
-                rf = self.rfs[jj]
-                pca = self.pcas[jj]
-                X_pred = self.X_preds[jj]
-                y_pred = self.y_preds[jj]
+            for jj in range(len(self._main_networks)):
+                main_network = self._main_networks[jj]
+                rf = self._rfs[jj]
+                pca = self._pcas[jj]
+                X_pred = self._X_preds[jj]
+                y_pred = self._y_preds[jj]
 
                 X_transformed = transform_data_for_main_network(
-                    X=X, cfg=self.cfg, rf=rf, pca=pca
+                    X=X, cfg=self._cfg, rf=rf, pca=pca
                 )
                 outputs, intermediate_activations = forward_main_network(
                     X_transformed, main_network
@@ -263,12 +278,12 @@ class HyperFastClassifier(BaseEstimator):
 
                 if self.nn_bias:
                     X_pred_ = transform_data_for_main_network(
-                        X=X_pred, cfg=self.cfg, rf=rf, pca=pca
+                        X=X_pred, cfg=self._cfg, rf=rf, pca=pca
                     )
                     outputs_pred, intermediate_activations_pred = forward_main_network(
                         X_pred_, main_network
                     )
-                    for bb, bias in enumerate(self.model.nn_bias):
+                    for bb, bias in enumerate(self._model.nn_bias):
                         if bb == 0:
                             outputs = nn_bias_logits(
                                 outputs, orig_X, X_pred, y_pred, bias, self.n_classes_

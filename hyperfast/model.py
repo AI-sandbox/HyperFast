@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 from .utils import *
 
+
 class HyperFast(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -69,7 +70,7 @@ class HyperFast(nn.Module):
         else:
             X = torch.from_numpy(self.pca.fit_transform(X.cpu().numpy())).to(X.device)
         X = torch.clamp(X, -self.clip_data_value, self.clip_data_value)
-    
+
         out = X
         pca_global_mean = torch.mean(out, axis=0)
         pca_perclass_mean = []
@@ -83,7 +84,15 @@ class HyperFast(nn.Module):
 
         pca_concat = []
         for ii, lab in enumerate(y):
-            row = torch.cat((out[ii], pca_global_mean, pca_perclass_mean[lab]))
+            if pca_perclass_mean.ndim == 1:
+                pca_perclass_mean = pca_perclass_mean.unsqueeze(0)
+            if out.ndim == 1:
+                out = out.unsqueeze(0)
+
+            lab_index = lab.item() if torch.is_tensor(lab) else lab
+            lab_index = min(lab_index, pca_perclass_mean.size(0) - 1)
+
+            row = torch.cat((out[ii], pca_global_mean, pca_perclass_mean[lab_index]))
             pca_concat.append(row)
         pca_output = torch.vstack(pca_concat)
         y_onehot = F.one_hot(y, self.max_categories)
