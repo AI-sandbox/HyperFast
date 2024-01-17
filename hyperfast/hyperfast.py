@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import math
 import torch
@@ -36,6 +38,7 @@ class HyperFastClassifier(BaseEstimator):
         optimize_steps (int): Number of optimization steps.
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
         seed (int): Random seed for reproducibility.
+        custom_path (str or None): If str, this custom path will be used to load the Hyperfast model instead of the default path.
     """
 
     def __init__(
@@ -48,6 +51,7 @@ class HyperFastClassifier(BaseEstimator):
         optimize_steps=64,
         torch_pca=True,
         seed=3,
+        custom_path: str | None = None,
     ):
         self.device = device
         self.n_ensemble = n_ensemble
@@ -57,9 +61,12 @@ class HyperFastClassifier(BaseEstimator):
         self.optimize_steps = optimize_steps
         self.torch_pca = torch_pca
         self.seed = seed
+        self.custom_path = custom_path
 
         seed_everything(self.seed)
         self._cfg = self._load_config(config, self.device, self.torch_pca, self.nn_bias)
+        if custom_path is not None:
+            self._cfg.model_path = custom_path
         self._model = self._initialize_model(self._cfg)
 
     def _load_config(self, config, device, torch_pca, nn_bias):
