@@ -302,7 +302,7 @@ class HyperFastClassifier(BaseEstimator):
                 yhats.append(predicted)
 
             yhats = torch.stack(yhats)
-            yhats = torch.sum(yhats, axis=0)
+            yhats = torch.mean(yhats, axis=0)
             return yhats.cpu().numpy()
 
     def predict(self, X):
