@@ -14,7 +14,7 @@ from sklearn.decomposition import PCA
 from types import SimpleNamespace
 from typing import List, Tuple
 from .config import config
-from sklearn.base import BaseEstimator
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
@@ -29,7 +29,7 @@ from .utils import (
 from .model import HyperFast
 
 
-class HyperFastClassifier(BaseEstimator):
+class HyperFastClassifier(BaseEstimator, ClassifierMixin):
     """
     A scikit-learn-like interface for the HyperFast model.
 
