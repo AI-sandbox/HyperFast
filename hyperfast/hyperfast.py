@@ -8,7 +8,11 @@ import numpy as np
 import pandas as pd
 from torch import Tensor
 import torch.nn.functional as F
+from torch.nn.modules.container import Sequential
+from hyperfast.utils import TorchPCA
+from sklearn.decomposition import PCA
 from types import SimpleNamespace
+from typing import List, Tuple
 from .config import config
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
@@ -34,7 +38,7 @@ class HyperFastClassifier(BaseEstimator):
         n_ensemble (int): Number of ensemble models to use.
         batch_size (int): Size of the batch for weight prediction and ensembling.
         nn_bias (bool): Whether to use nearest neighbor bias.
-        optimization (str): Strategy for optimization, can be None, 'optimize', or 'ensemble_optimize'.
+        optimization (str or None): Strategy for optimization, can be None, 'optimize', or 'ensemble_optimize'.
         optimize_steps (int): Number of optimization steps.
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
         seed (int): Random seed for reproducibility.
@@ -43,16 +47,16 @@ class HyperFastClassifier(BaseEstimator):
 
     def __init__(
         self,
-        device="cuda:0",
-        n_ensemble=16,
-        batch_size=2048,
-        nn_bias=False,
-        optimization="ensemble_optimize",
-        optimize_steps=64,
-        torch_pca=True,
-        seed=3,
+        device: str = "cuda:0",
+        n_ensemble: int = 16,
+        batch_size: int = 2048,
+        nn_bias: bool = False,
+        optimization: str | None = "ensemble_optimize",
+        optimize_steps: int = 64,
+        torch_pca: bool = True,
+        seed: int = 3,
         custom_path: str | None = None,
-    ):
+    ) -> None:
         self.device = device
         self.n_ensemble = n_ensemble
         self.batch_size = batch_size
@@ -69,14 +73,16 @@ class HyperFastClassifier(BaseEstimator):
             self._cfg.model_path = custom_path
         self._model = self._initialize_model(self._cfg)
 
-    def _load_config(self, config, device, torch_pca, nn_bias):
+    def _load_config(
+        self, config: dict, device: str, torch_pca: bool, nn_bias: bool
+    ) -> SimpleNamespace:
         cfg = SimpleNamespace(**config)
         cfg.device = device
         cfg.torch_pca = torch_pca
         cfg.nn_bias = nn_bias
         return cfg
 
-    def _initialize_model(self, cfg):
+    def _initialize_model(self, cfg: SimpleNamespace) -> HyperFast:
         model = HyperFast(cfg).to(cfg.device)
         if not os.path.exists(cfg.model_path):
             self._download_model(cfg.model_url, cfg.model_path)
@@ -92,7 +98,7 @@ class HyperFastClassifier(BaseEstimator):
         model.eval()
         return model
 
-    def _download_model(self, url, local_path):
+    def _download_model(self, url: str, local_path: str) -> None:
         print(
             f"Downloading model from {url}, since no model was found at {local_path}",
             flush=True,
@@ -105,7 +111,9 @@ class HyperFastClassifier(BaseEstimator):
         else:
             raise ConnectionError(f"Failed to download the model from {url}")
 
-    def _preprocess_fitting_data(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    def _preprocess_fitting_data(
+        self, x: np.ndarray, y: np.ndarray
+    ) -> Tuple[Tensor, Tensor]:
         x = np.array(x, dtype=np.float32).copy()
         y = np.array(y, dtype=np.int64).copy()
         # Impute missing values for numerical features with the mean
@@ -153,7 +161,7 @@ class HyperFastClassifier(BaseEstimator):
             y, dtype=torch.long
         ).to(self.device)
 
-    def _preprocess_test_data(self, x_test):
+    def _preprocess_test_data(self, x_test: np.ndarray) -> Tensor:
         x_test = np.array(x_test, dtype=np.float32).copy()
         # Impute missing values for numerical features with the mean
         if len(self._numerical_feature_idxs) > 0:
@@ -173,16 +181,16 @@ class HyperFastClassifier(BaseEstimator):
 
         # Standardize data
         x_test = self._scaler.transform(x_test)
-        return x_test
+        return torch.tensor(x_test, dtype=torch.float).to(self.device)
 
-    def _initialize_fit_attributes(self):
+    def _initialize_fit_attributes(self) -> None:
         self._rfs = []
         self._pcas = []
         self._main_networks = []
         self._X_preds = []
         self._y_preds = []
 
-    def _sample_data(self, X, y):
+    def _sample_data(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
         indices = torch.randperm(len(X))[: self.batch_size]
         X_pred, y_pred = X[indices].flatten(start_dim=1), y[indices]
         if X_pred.shape[0] < self._cfg.n_dims:
@@ -191,14 +199,26 @@ class HyperFastClassifier(BaseEstimator):
             y_pred = torch.repeat_interleave(y_pred, n_repeats, axis=0)
         return X_pred, y_pred
 
-    def _store_network(self, rf, pca, main_network, X_pred, y_pred):
+    def _store_network(
+        self,
+        rf: Sequential,
+        pca: PCA | TorchPCA,
+        main_network: list,
+        X_pred: Tensor,
+        y_pred: Tensor,
+    ) -> None:
         self._rfs.append(rf)
         self._pcas.append(pca)
         self._main_networks.append(main_network)
         self._X_preds.append(X_pred)
         self._y_preds.append(y_pred)
 
-    def fit(self, X, y, cat_features=[]):
+    def fit(
+        self,
+        X: np.ndarray | pd.DataFrame,
+        y: np.ndarray | pd.Series,
+        cat_features: List[int] = [],
+    ) -> HyperFastClassifier:
         """
         Generates a main model for the given data.
 
@@ -261,12 +281,11 @@ class HyperFastClassifier(BaseEstimator):
 
         return self
 
-    def predict_proba(self, X):
+    def predict_proba(self, X: np.ndarray | pd.DataFrame) -> np.ndarray:
         check_is_fitted(self)
         X = check_array(X)
         X = self._preprocess_test_data(X)
         with torch.no_grad():
-            X = torch.Tensor(X).to(self.device)
             orig_X = X
             yhats = []
             for jj in range(len(self._main_networks)):
@@ -312,7 +331,7 @@ class HyperFastClassifier(BaseEstimator):
             yhats = torch.sum(yhats, axis=0)
             return yhats.cpu().numpy()
 
-    def predict(self, X):
+    def predict(self, X: np.ndarray | pd.DataFrame) -> np.ndarray:
         outputs = self.predict_proba(X)
         y_pred = np.argmax(outputs, axis=1)
         return y_pred
