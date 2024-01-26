@@ -16,6 +16,8 @@ from typing import List, Tuple
 from .config import config
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+from sklearn.utils.multiclass import check_classification_targets
+from sklearn.utils import column_or_1d
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -111,14 +113,32 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         else:
             raise ConnectionError(f"Failed to download the model from {url}")
 
+    def _get_tags(self) -> dict:
+        tags = super()._get_tags()
+        tags["allow_nan"] = True
+        return tags
+
     def _preprocess_fitting_data(
-        self, x: np.ndarray, y: np.ndarray
+        self,
+        x: np.ndarray | pd.DataFrame,
+        y: np.ndarray | pd.Series,
     ) -> Tuple[Tensor, Tensor]:
-        x = np.array(x, dtype=np.float32).copy()
-        y = np.array(y, dtype=np.int64).copy()
+        if not isinstance(x, (np.ndarray, pd.DataFrame)) and not isinstance(
+            y, (np.ndarray, pd.Series)
+        ):
+            x, y = check_X_y(x, y)
+        if not isinstance(x, (np.ndarray, pd.DataFrame)):
+            x = check_array(x)
+        if not isinstance(y, (np.ndarray, pd.Series)):
+            y = np.array(y)
+        x = np.array(x).copy()
+        y = np.array(y).copy()
         # Impute missing values for numerical features with the mean
         self._num_imputer = SimpleImputer(missing_values=np.nan, strategy="mean")
-        self._all_feature_idxs = np.arange(x.shape[1])
+        if len(x.shape) == 2:
+            self._all_feature_idxs = np.arange(x.shape[1])
+        else:
+            raise ValueError("Reshape your data")
         self._numerical_feature_idxs = np.setdiff1d(
             self._all_feature_idxs, self._cat_features
         )
@@ -144,7 +164,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 transformers=[
                     (
                         "cat",
-                        OneHotEncoder(sparse=False, handle_unknown="ignore"),
+                        OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
                         self._cat_features,
                     )
                 ],
@@ -153,17 +173,30 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             self.one_hot_encoder.fit(x)
             x = self.one_hot_encoder.transform(x)
 
+        x, y = check_X_y(x, y)
         # Standardize data
         self._scaler = StandardScaler()
         self._scaler.fit(x)
         x = self._scaler.transform(x)
+
+        check_classification_targets(y)
+        y = column_or_1d(y, warn=True)
+        self.n_features_in_ = x.shape[1]
+        self.classes_, y = np.unique(y, return_inverse=True)
         return torch.tensor(x, dtype=torch.float).to(self.device), torch.tensor(
             y, dtype=torch.long
         ).to(self.device)
 
-    def _preprocess_test_data(self, x_test: np.ndarray) -> Tensor:
-        x_test = np.array(x_test, dtype=np.float32).copy()
+    def _preprocess_test_data(
+        self,
+        x_test: np.ndarray | pd.DataFrame,
+    ) -> Tensor:
+        if not isinstance(x_test, (np.ndarray, pd.DataFrame)):
+            x_test = check_array(x_test)
+        x_test = np.array(x_test).copy()
         # Impute missing values for numerical features with the mean
+        if len(x_test.shape) == 1:
+            raise ValueError("Reshape your data")
         if len(self._numerical_feature_idxs) > 0:
             x_test[:, self._numerical_feature_idxs] = self._num_imputer.transform(
                 x_test[:, self._numerical_feature_idxs]
@@ -179,6 +212,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             x_test = pd.DataFrame(x_test)
             x_test = self.one_hot_encoder.transform(x_test)
 
+        x_test = check_array(x_test)
         # Standardize data
         x_test = self._scaler.transform(x_test)
         return torch.tensor(x_test, dtype=torch.float).to(self.device)
@@ -228,11 +262,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             cat_features (list, optional): List of categorical features. Defaults to an empty list.
         """
         seed_everything(self.seed)
-        X, y = check_X_y(X, y)
         self._cat_features = cat_features
-        self.n_features_in_ = X.shape[1]
-        self.classes_ = np.unique(y)
-
         X, y = self._preprocess_fitting_data(X, y)
         self._initialize_fit_attributes()
 
@@ -259,7 +289,9 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             self._store_network(rf, pca, main_network, X_pred, y_pred)
 
         if self.optimization == "optimize" and self.optimize_steps > 0:
-            assert len(self._main_networks) == 1
+            assert (
+                len(self._main_networks) == 1
+            ), '"optimize" only works with n_ensemble=1. For n_ensemble > 1, use None or "ensemble_optimize" instead.'
             (
                 self._rfs[0],
                 self._pcas[0],
@@ -283,7 +315,6 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
 
     def predict_proba(self, X: np.ndarray | pd.DataFrame) -> np.ndarray:
         check_is_fitted(self)
-        X = check_array(X)
         X = self._preprocess_test_data(X)
         with torch.no_grad():
             orig_X = X
@@ -333,5 +364,4 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X: np.ndarray | pd.DataFrame) -> np.ndarray:
         outputs = self.predict_proba(X)
-        y_pred = np.argmax(outputs, axis=1)
-        return y_pred
+        return self.classes_[np.argmax(outputs, axis=1)]
