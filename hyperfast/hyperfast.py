@@ -32,6 +32,7 @@ from .model import HyperFast
 
 
 class HyperFastClassifier(BaseEstimator, ClassifierMixin):
+    _model_cache = {}
     """
     A scikit-learn-like interface for the HyperFast model.
 
@@ -85,6 +86,10 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         return cfg
 
     def _initialize_model(self, cfg: SimpleNamespace) -> HyperFast:
+        cache_key = (cfg.model_path, cfg.device)
+        if cache_key in self._model_cache:
+            return self._model_cache[cache_key]
+
         model = HyperFast(cfg).to(cfg.device)
         if not os.path.exists(cfg.model_path):
             self._download_model(cfg.model_url, cfg.model_path)
@@ -98,6 +103,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Model file not found at {cfg.model_path}") from e
         model.eval()
+        self._model_cache[cache_key] = model
         return model
 
     def _download_model(self, url: str, local_path: str) -> None:
