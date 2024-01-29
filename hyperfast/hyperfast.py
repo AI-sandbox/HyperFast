@@ -46,6 +46,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
         seed (int): Random seed for reproducibility.
         custom_path (str or None): If str, this custom path will be used to load the Hyperfast model instead of the default path.
+        cat_features (list or None): List of indices of categorical features.
     """
 
     def __init__(
@@ -59,6 +60,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         torch_pca: bool = True,
         seed: int = 3,
         custom_path: str | None = None,
+        cat_features: List[int] | None = None,
     ) -> None:
         self.device = device
         self.n_ensemble = n_ensemble
@@ -69,6 +71,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.torch_pca = torch_pca
         self.seed = seed
         self.custom_path = custom_path
+        self.cat_features = cat_features
 
         seed_everything(self.seed)
         self._cfg = self._load_config(config, self.device, self.torch_pca, self.nn_bias)
@@ -95,11 +98,17 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             self._download_model(cfg.model_url, cfg.model_path)
 
         try:
-            print(f"Loading model from {cfg.model_path}...", flush=True)
+            print(
+                f"Loading model from {cfg.model_path} on {cfg.device} device...",
+                flush=True,
+            )
             model.load_state_dict(
                 torch.load(cfg.model_path, map_location=torch.device(cfg.device))
             )
-            print(f"Model loaded from {cfg.model_path}", flush=True)
+            print(
+                f"Model loaded from {cfg.model_path} on {cfg.device} device.",
+                flush=True,
+            )
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Model file not found at {cfg.model_path}") from e
         model.eval()
@@ -139,6 +148,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             y = np.array(y)
         x = np.array(x).copy()
         y = np.array(y).copy()
+        self._cat_features = self.cat_features if self.cat_features is not None else []
         # Impute missing values for numerical features with the mean
         self._num_imputer = SimpleImputer(missing_values=np.nan, strategy="mean")
         if len(x.shape) == 2:
@@ -254,10 +264,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self._y_preds.append(y_pred)
 
     def fit(
-        self,
-        X: np.ndarray | pd.DataFrame,
-        y: np.ndarray | pd.Series,
-        cat_features: List[int] = [],
+        self, X: np.ndarray | pd.DataFrame, y: np.ndarray | pd.Series
     ) -> HyperFastClassifier:
         """
         Generates a main model for the given data.
@@ -265,10 +272,8 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         Args:
             X (array-like): Input features.
             y (array-like): Target values.
-            cat_features (list, optional): List of categorical features. Defaults to an empty list.
         """
         seed_everything(self.seed)
-        self._cat_features = cat_features
         X, y = self._preprocess_fitting_data(X, y)
         self._initialize_fit_attributes()
 
