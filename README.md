@@ -46,6 +46,7 @@ print(f"Accuracy: {accuracy * 100:.2f}%")
 
 
 **Warning**: 
+* Set ``cat_features`` as the list of indices of the categorical features in the dataset (if any), now in ``__init__``.
 * The current default hyperparameters provide medium speed-accuracy performance.
 * For the fastest inference (but less accurate) set ``n_ensemble=1`` and ``optimization=None``.
 * For slower but most accurate predictions, optimize the parameters of HyperFast for each dataset. In this case, we recommend the following search space:
