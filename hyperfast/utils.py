@@ -132,12 +132,20 @@ class MainNetworkTrainable(nn.Module):
 
         self.rf = rf
         self.rf[0].weight.requires_grad = True
-        self.pca_mean = nn.Parameter(pca.mean_)
+        self.pca_mean = (
+            nn.Parameter(pca.mean_)
+            if cfg.torch_pca
+            else nn.Parameter(torch.from_numpy(pca.mean_))
+        )
         self.input_features, self.output_features = pca.components_.shape
         self.pca_components = nn.Linear(
             self.input_features, self.output_features, bias=False
         )
-        self.pca_components.weight = nn.Parameter(pca.components_)
+        self.pca_components.weight = (
+            nn.Parameter(pca.components_)
+            if cfg.torch_pca
+            else nn.Parameter(torch.from_numpy(pca.components_))
+        )
 
         self.layers = nn.ModuleList()
         for matrix, bias in main_network:
@@ -180,8 +188,16 @@ class MainNetworkTrainable(nn.Module):
         rf_reconstructed[0].weight.requires_grad = False
 
         pca_reconstructed = self.pca
-        pca_reconstructed.mean_ = self.pca_mean.detach()
-        pca_reconstructed.components_ = self.pca_components.weight.detach()
+        pca_reconstructed.mean_ = (
+            self.pca_mean.detach()
+            if self.cfg.torch_pca
+            else self.pca_mean.cpu().detach().numpy()
+        )
+        pca_reconstructed.components_ = (
+            self.pca_components.weight.detach()
+            if self.cfg.torch_pca
+            else self.pca_components.weight.cpu().detach().numpy()
+        )
 
         main_network_reconstructed = []
 
