@@ -4,11 +4,12 @@
 
 
 ## Installation
+:exclamation: Install the new release:
 
 HyperFast can be installed from PyPI using
 
 ```bash
-pip install hyperfast
+pip install hyperfast==1.0.0
 ```
 
 This package contains example code to run HyperFast. Ensure that you are using Python 3.9 or later to run this project.
