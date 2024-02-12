@@ -59,7 +59,7 @@ param_grid = {
     'nn_bias': [True, False],
     'optimization': [None, 'optimize', 'ensemble_optimize'],
     'optimize_steps': [1, 4, 8, 16, 32, 64, 128],
-    'seed': list(range(1, 10))
+    'seed': list(range(10))
 }
 ```
 
