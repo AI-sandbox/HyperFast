@@ -46,6 +46,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
         seed (int): Random seed for reproducibility.
         custom_path (str or None): If str, this custom path will be used to load the Hyperfast model instead of the default path.
+        stratify_sampling (bool): Determines whether to use stratified sampling for creating the batch. 
         cat_features (list or None): List of indices of categorical features.
     """
 
@@ -60,6 +61,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         torch_pca: bool = True,
         seed: int = 3,
         custom_path: str | None = None,
+        stratify_sampling: bool = False,
         cat_features: List[int] | None = None,
     ) -> None:
         self.device = device
@@ -71,6 +73,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.torch_pca = torch_pca
         self.seed = seed
         self.custom_path = custom_path
+        self.stratify_sampling = stratify_sampling
         self.cat_features = cat_features
 
         seed_everything(self.seed)
@@ -241,8 +244,25 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self._y_preds = []
 
     def _sample_data(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
-        indices = torch.randperm(len(X))[: self.batch_size]
-        X_pred, y_pred = X[indices].flatten(start_dim=1), y[indices]
+        if self.stratify_sampling:
+            # Stratified sampling
+            print("Using stratified sampling")
+            classes, class_counts = torch.unique(y, return_counts=True)
+            samples_per_class = self.batch_size // len(classes)
+            sampled_indices = []
+
+            for cls in classes:
+                cls_indices = (y == cls).nonzero(as_tuple=True)[0]
+                n_samples = min(samples_per_class, len(cls_indices))
+                cls_sampled_indices = cls_indices[torch.randperm(len(cls_indices))[:n_samples]]
+                sampled_indices.append(cls_sampled_indices)
+
+            sampled_indices = torch.cat(sampled_indices)
+            sampled_indices = sampled_indices[torch.randperm(len(sampled_indices))]
+        else:
+            # Original random sampling
+            sampled_indices = torch.randperm(len(X))[: self.batch_size]
+        X_pred, y_pred = X[sampled_indices].flatten(start_dim=1), y[sampled_indices]
         if X_pred.shape[0] < self._cfg.n_dims:
             n_repeats = math.ceil(self._cfg.n_dims / X_pred.shape[0])
             X_pred = torch.repeat_interleave(X_pred, n_repeats, axis=0)

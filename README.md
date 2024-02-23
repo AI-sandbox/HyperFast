@@ -49,14 +49,16 @@ print(f"Accuracy: {accuracy * 100:.2f}%")
 **Warning**: 
 * Set ``cat_features`` as the list of indices of the categorical features in the dataset (if any), now in ``__init__``.
 * The current default hyperparameters provide medium speed-accuracy performance.
-* For the fastest inference (but less accurate) set ``n_ensemble=1`` and ``optimization=None``.
-* For slower but most accurate predictions, optimize the parameters of HyperFast for each dataset. In this case, we recommend the following search space:
+* :rocket: For the fastest inference (but less accurate) set ``n_ensemble=1`` and ``optimization=None``.
+* :bar_chart: If you are dealing with an **imbalanced dataset**, consider setting ``stratify_sampling=True`` with ``n_ensemble`` > 1.
+* :ok_hand: For slower but most accurate predictions, optimize the inference parameters of HyperFast for each dataset. In this case, we recommend the following search space:
 
 ```python
 param_grid = {
     'n_ensemble': [1, 4, 8, 16, 32],
     'batch_size': [1024, 2048],
     'nn_bias': [True, False],
+    'stratify_sampling': [True, False],
     'optimization': [None, 'optimize', 'ensemble_optimize'],
     'optimize_steps': [1, 4, 8, 16, 32, 64, 128],
     'seed': list(range(10))
