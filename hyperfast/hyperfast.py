@@ -46,7 +46,9 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
         seed (int): Random seed for reproducibility.
         custom_path (str or None): If str, this custom path will be used to load the Hyperfast model instead of the default path.
-        stratify_sampling (bool): Determines whether to use stratified sampling for creating the batch. 
+        stratify_sampling (bool): Determines whether to use stratified sampling for creating the batch.
+        feature_bagging (bool): Indicates whether feature bagging should be performed when ensembling.
+        feature_bagging_size (int): Size of the feature subset when performing feature bagging.
         cat_features (list or None): List of indices of categorical features.
     """
 
@@ -62,6 +64,8 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         seed: int = 3,
         custom_path: str | None = None,
         stratify_sampling: bool = False,
+        feature_bagging: bool = False,
+        feature_bagging_size: int = 3000,
         cat_features: List[int] | None = None,
     ) -> None:
         self.device = device
@@ -74,6 +78,8 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.seed = seed
         self.custom_path = custom_path
         self.stratify_sampling = stratify_sampling
+        self.feature_bagging = feature_bagging
+        self.feature_bagging_size = feature_bagging_size
         self.cat_features = cat_features
 
         seed_everything(self.seed)
@@ -242,8 +248,17 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self._main_networks = []
         self._X_preds = []
         self._y_preds = []
+        if self.feature_bagging:
+            self.selected_features = []
 
     def _sample_data(self, X: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
+        if self.feature_bagging:
+            print("Performing feature bagging")
+            stds = torch.std(X, dim=0)
+            feature_idxs = torch.multinomial(stds, self.feature_bagging_size, replacement=False)
+            self.selected_features.append(feature_idxs)
+            X = X[:, feature_idxs]
+
         if self.stratify_sampling:
             # Stratified sampling
             print("Using stratified sampling")
@@ -356,9 +371,15 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 pca = self._pcas[jj]
                 X_pred = self._X_preds[jj]
                 y_pred = self._y_preds[jj]
+                if self.feature_bagging:
+                    X_ = X[:, self.selected_features[jj]]
+                    orig_X_ = orig_X[:, self.selected_features[jj]]
+                else:
+                    X_ = X
+                    orig_X_ = orig_X
 
                 X_transformed = transform_data_for_main_network(
-                    X=X, cfg=self._cfg, rf=rf, pca=pca
+                    X=X_, cfg=self._cfg, rf=rf, pca=pca
                 )
                 outputs, intermediate_activations = forward_main_network(
                     X_transformed, main_network
@@ -374,7 +395,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                     for bb, bias in enumerate(self._model.nn_bias):
                         if bb == 0:
                             outputs = nn_bias_logits(
-                                outputs, orig_X, X_pred, y_pred, bias, self.n_classes_
+                                outputs, orig_X_, X_pred, y_pred, bias, self.n_classes_
                             )
                         elif bb == 1:
                             outputs = nn_bias_logits(

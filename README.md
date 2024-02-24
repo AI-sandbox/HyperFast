@@ -51,6 +51,7 @@ print(f"Accuracy: {accuracy * 100:.2f}%")
 * The current default hyperparameters provide medium speed-accuracy performance.
 * :rocket: For the fastest inference (but less accurate) set ``n_ensemble=1`` and ``optimization=None``.
 * :bar_chart: If you are dealing with an **imbalanced dataset**, consider setting ``stratify_sampling=True`` with ``n_ensemble`` > 1.
+* :globe_with_meridians: If you are dealing with a very **high-dimensional dataset** (e.g., >3000 features), consider setting ``feature_bagging=True`` with ``n_ensemble`` > 1.
 * :ok_hand: For slower but most accurate predictions, optimize the inference parameters of HyperFast for each dataset. In this case, we recommend the following search space:
 
 ```python
