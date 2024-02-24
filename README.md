@@ -1,6 +1,6 @@
 # HyperFast : Instant Classification for Tabular Data
 
-[HyperFast](https://openreview.net/forum?id=VRBhaU8IDz) is a hypernetwork designed for fast classification of tabular data, capable of scaling to large datasets. Utilizing a meta-trained hypernetwork, HyperFast generates a dataset-specific target network in a single forward pass, eliminating the need for time-consuming model training.
+[HyperFast](https://arxiv.org/abs/2402.14335) is a hypernetwork designed for fast classification of tabular data, capable of scaling to large datasets. Utilizing a meta-trained hypernetwork, HyperFast generates a dataset-specific target network in a single forward pass, eliminating the need for time-consuming model training.
 
 
 ## Installation
@@ -73,13 +73,13 @@ This project is under the CC BY-NC 4.0 license. See [LICENSE](LICENSE) for detai
 
 ## Cite us
 
-If you use HyperFast in your research, please cite our [paper](https://openreview.net/forum?id=VRBhaU8IDz):
+If you use HyperFast in your research, please cite our [paper](https://arxiv.org/abs/2402.14335):
 
 ```latex
-@inproceedings{bonet2023hyperfast,
+@inproceedings{bonet2024hyperfast,
   title={HyperFast: Instant Classification for Tabular Data},
   author={Bonet, David and Montserrat, Daniel Mas and Gir{\'o}-i-Nieto, Xavier and Ioannidis, Alexander},
-  booktitle={NeurIPS 2023 Second Table Representation Learning Workshop},
-  year={2023}
+  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
+  year={2024}
 }
 ```
