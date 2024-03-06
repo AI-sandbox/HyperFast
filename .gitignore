@@ -140,3 +140,6 @@ outputs/
 
 # figures
 **figures**
+
+# others
+.DS_Store
