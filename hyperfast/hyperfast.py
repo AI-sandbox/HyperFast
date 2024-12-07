@@ -41,6 +41,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         n_ensemble (int): Number of ensemble models to use.
         batch_size (int): Size of the batch for weight prediction and ensembling.
         nn_bias (bool): Whether to use nearest neighbor bias.
+        nn_bias_mini_batches (bool): Whether to use mini-batches of size 128 for nearest neighbor bias.
         optimization (str or None): Strategy for optimization, can be None, 'optimize', or 'ensemble_optimize'.
         optimize_steps (int): Number of optimization steps.
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
@@ -58,6 +59,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         n_ensemble: int = 16,
         batch_size: int = 2048,
         nn_bias: bool = False,
+        nn_bias_mini_batches: bool = True,
         optimization: str | None = "ensemble_optimize",
         optimize_steps: int = 64,
         torch_pca: bool = True,
@@ -72,6 +74,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.n_ensemble = n_ensemble
         self.batch_size = batch_size
         self.nn_bias = nn_bias
+        self.nn_bias_mini_batches = nn_bias_mini_batches
         self.optimization = optimization
         self.optimize_steps = optimize_steps
         self.torch_pca = torch_pca
@@ -112,7 +115,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 flush=True,
             )
             model.load_state_dict(
-                torch.load(cfg.model_path, map_location=torch.device(cfg.device))
+                torch.load(cfg.model_path, map_location=torch.device(cfg.device), weights_only=True)
             )
             print(
                 f"Model loaded from {cfg.model_path} on {cfg.device} device.",
@@ -208,9 +211,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         y = column_or_1d(y, warn=True)
         self.n_features_in_ = x.shape[1]
         self.classes_, y = np.unique(y, return_inverse=True)
-        return torch.tensor(x, dtype=torch.float).to(self.device), torch.tensor(
-            y, dtype=torch.long
-        ).to(self.device)
+        return torch.tensor(x, dtype=torch.float), torch.tensor(y, dtype=torch.long)
 
     def _preprocess_test_data(
         self,
@@ -240,7 +241,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         x_test = check_array(x_test)
         # Standardize data
         x_test = self._scaler.transform(x_test)
-        return torch.tensor(x_test, dtype=torch.float).to(self.device)
+        return torch.tensor(x_test, dtype=torch.float)
 
     def _initialize_fit_attributes(self) -> None:
         self._rfs = []
@@ -314,6 +315,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
 
         for n in range(self.n_ensemble):
             X_pred, y_pred = self._sample_data(X, y)
+            X_pred, y_pred = X_pred.to(self.device), y_pred.to(self.device)
             self.n_classes_ = len(torch.unique(y_pred).cpu().numpy())
 
             rf, pca, main_network = self._model(X_pred, y_pred, self.n_classes_)
@@ -362,57 +364,59 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X: np.ndarray | pd.DataFrame) -> np.ndarray:
         check_is_fitted(self)
         X = self._preprocess_test_data(X)
-        with torch.no_grad():
-            orig_X = X
-            yhats = []
-            for jj in range(len(self._main_networks)):
-                main_network = self._main_networks[jj]
-                rf = self._rfs[jj]
-                pca = self._pcas[jj]
-                X_pred = self._X_preds[jj]
-                y_pred = self._y_preds[jj]
-                if self.feature_bagging:
-                    X_ = X[:, self.selected_features[jj]]
-                    orig_X_ = orig_X[:, self.selected_features[jj]]
-                else:
-                    X_ = X
-                    orig_X_ = orig_X
+        X_dataset = torch.utils.data.TensorDataset(X)
+        X_loader = torch.utils.data.DataLoader(X_dataset, batch_size=self.batch_size, shuffle=False)
+        all_yhats = []
+        for X_batch in X_loader:
+            X_batch = X_batch[0].to(self.device)
+            with torch.no_grad():
+                orig_X = X_batch
+                yhats = []
+                for jj in range(len(self._main_networks)):
+                    main_network = self._main_networks[jj]
+                    rf = self._rfs[jj]
+                    pca = self._pcas[jj]
+                    X_pred = self._X_preds[jj]
+                    y_pred = self._y_preds[jj]
+                    if self.feature_bagging:
+                        X_ = X_batch[:, self.selected_features[jj]]
+                        orig_X_ = orig_X[:, self.selected_features[jj]]
+                    else:
+                        X_ = X_batch
+                        orig_X_ = orig_X
 
-                X_transformed = transform_data_for_main_network(
-                    X=X_, cfg=self._cfg, rf=rf, pca=pca
-                )
-                outputs, intermediate_activations = forward_main_network(
-                    X_transformed, main_network
-                )
-
-                if self.nn_bias:
-                    X_pred_ = transform_data_for_main_network(
-                        X=X_pred, cfg=self._cfg, rf=rf, pca=pca
+                    X_transformed = transform_data_for_main_network(
+                        X=X_, cfg=self._cfg, rf=rf, pca=pca
                     )
-                    outputs_pred, intermediate_activations_pred = forward_main_network(
-                        X_pred_, main_network
+                    outputs, intermediate_activations = forward_main_network(
+                        X_transformed, main_network
                     )
-                    for bb, bias in enumerate(self._model.nn_bias):
-                        if bb == 0:
-                            outputs = nn_bias_logits(
-                                outputs, orig_X_, X_pred, y_pred, bias, self.n_classes_
-                            )
-                        elif bb == 1:
-                            outputs = nn_bias_logits(
-                                outputs,
-                                intermediate_activations,
-                                intermediate_activations_pred,
-                                y_pred,
-                                bias,
-                                self.n_classes_,
-                            )
 
-                predicted = F.softmax(outputs, dim=1)
-                yhats.append(predicted)
+                    if self.nn_bias:
+                        X_pred_ = transform_data_for_main_network(
+                            X=X_pred, cfg=self._cfg, rf=rf, pca=pca
+                        )
+                        outputs_pred, intermediate_activations_pred = forward_main_network(
+                            X_pred_, main_network
+                        )
+                        for bb, bias in enumerate(self._model.nn_bias):
+                            if bb == 0:
+                                outputs = nn_bias_logits(
+                                    outputs, orig_X_, X_pred, y_pred, bias, self.n_classes_, self.nn_bias_mini_batches
+                                )
+                            elif bb == 1:
+                                outputs = nn_bias_logits(
+                                    outputs, intermediate_activations, intermediate_activations_pred, y_pred, bias, self.n_classes_, self.nn_bias_mini_batches,
+                                )
 
-            yhats = torch.stack(yhats)
-            yhats = torch.mean(yhats, axis=0)
-            return yhats.cpu().numpy()
+                    predicted = F.softmax(outputs, dim=1)
+                    yhats.append(predicted)
+
+                yhats = torch.stack(yhats)
+                yhats = torch.mean(yhats, axis=0)
+                yhats = yhats.cpu().numpy()
+                all_yhats.append(yhats)
+        return np.concatenate(all_yhats, axis=0)
 
     def predict(self, X: np.ndarray | pd.DataFrame) -> np.ndarray:
         outputs = self.predict_proba(X)
