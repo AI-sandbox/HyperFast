@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
-from .utils import *
+from .utils import TorchPCA, get_main_weights, forward_linear_layer
 
 
 class HyperFast(nn.Module):

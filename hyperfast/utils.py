@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-from types import SimpleNamespace
 
 
 def seed_everything(seed: int):
@@ -22,11 +21,11 @@ def seed_everything(seed: int):
 
 
 def nn_bias_logits(
-    test_logits, test_samples, train_samples, train_labels, bias_param, n_classes
+    test_logits, test_samples, train_samples, train_labels, bias_param, n_classes, mini_batches
 ):
     with torch.no_grad():
         nn = NN(train_samples, train_labels)
-        preds = nn.predict(test_samples)
+        preds = nn.predict(test_samples, mini_batches=mini_batches)
         preds_onehot = F.one_hot(preds, n_classes)
     test_logits[preds_onehot.bool()] += bias_param
     return test_logits
@@ -240,6 +239,7 @@ def fine_tune_main_network(
 
     for step in range(optimize_steps):
         for inputs, targets in dataloader:
+            inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
             outputs = main_model(inputs, targets)
             loss = criterion(outputs, targets)
@@ -294,7 +294,7 @@ Full project repository: https://github.com/JosueCom/Lign (A graph deep learning
 
 
 def distance_matrix(x, y=None, p=2):
-    y = x if type(y) == type(None) else y
+    y = x if y is None else y
 
     n = x.size(0)
     m = y.size(0)
@@ -321,11 +321,8 @@ class NN:
         self.train_pts = X
         self.train_label = Y
 
-    def __call__(self, x, mini_batches=True):
-        return self.predict(x)
-
     def predict(self, x, mini_batches=True):
-        if type(self.train_pts) == type(None) or type(self.train_label) == type(None):
+        if self.train_pts is None or self.train_label is None:
             name = self.__class__.__name__
             raise RuntimeError(
                 f"{name} wasn't trained. Need to execute {name}.train() first"
@@ -341,7 +338,7 @@ class NN:
                 num_batches = math.ceil(x.shape[0] / batch_size)
                 labels = []
                 for ii in range(num_batches):
-                    x_ = x[batch_size * ii : batch_size * (ii + 1), :]
+                    x_ = x[batch_size * ii:batch_size * (ii + 1), :]
                     dist = distance_matrix(x_, self.train_pts, self.p)
                     labels_ = torch.argmin(dist, dim=1)
                     labels.append(labels_)
@@ -350,7 +347,7 @@ class NN:
         return self.train_label[labels]
 
     def predict_from_training_with_LOO(self, mini_batches=True):
-        if type(self.train_pts) == type(None) or type(self.train_label) == type(None):
+        if self.train_pts is None or self.train_label is None:
             name = self.__class__.__name__
             raise RuntimeError(
                 f"{name} wasn't trained. Need to execute {name}.train() first"
@@ -365,7 +362,7 @@ class NN:
             num_batches = math.ceil(self.train_pts.shape[0] / batch_size)
             labels = []
             for ii in range(num_batches):
-                x_ = self.train_pts[batch_size * ii : batch_size * (ii + 1), :]
+                x_ = self.train_pts[batch_size * ii:batch_size * (ii + 1), :]
                 dist = distance_matrix(x_, self.train_pts, self.p)
                 dist.fill_diagonal_(float("inf"))
                 labels_ = torch.argmin(dist, dim=1)
