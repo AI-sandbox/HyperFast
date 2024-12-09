@@ -7,6 +7,7 @@ import requests
 import numpy as np
 import pandas as pd
 from torch import Tensor
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.container import Sequential
 from hyperfast.utils import TorchPCA
@@ -247,6 +248,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self._rfs = []
         self._pcas = []
         self._main_networks = []
+        self._nnbias = []
         self._X_preds = []
         self._y_preds = []
         if self.feature_bagging:
@@ -284,18 +286,42 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             X_pred = torch.repeat_interleave(X_pred, n_repeats, axis=0)
             y_pred = torch.repeat_interleave(y_pred, n_repeats, axis=0)
         return X_pred, y_pred
+    
+    def _move_to_device(self, data, device=None):
+        if device is None:
+            device = self.device
+        if isinstance(data, list):
+            return [(mat.to(device), bi.to(device)) for mat, bi in data]
+        elif isinstance(data, TorchPCA):
+            data.mean_, data.components_ = data.mean_.to(device), data.components_.to(device)
+            return data
+        elif isinstance(data, PCA): # scikit-learn PCA
+            return data
+        return data.to(device)
+
+    def _move_to_cpu(self, data):
+        return self._move_to_device(data, "cpu")
 
     def _store_network(
         self,
         rf: Sequential,
         pca: PCA | TorchPCA,
         main_network: list,
+        nnbias: nn.Parameter,
         X_pred: Tensor,
         y_pred: Tensor,
     ) -> None:
+        rf = self._move_to_cpu(rf)
+        pca = self._move_to_cpu(pca)
+        main_network = self._move_to_cpu(main_network)
+        nnbias = self._move_to_cpu(nnbias)
+        X_pred = self._move_to_cpu(X_pred)
+        y_pred = self._move_to_cpu(y_pred)
+
         self._rfs.append(rf)
         self._pcas.append(pca)
         self._main_networks.append(main_network)
+        self._nnbias.append(nnbias)
         self._X_preds.append(X_pred)
         self._y_preds.append(y_pred)
 
@@ -317,11 +343,10 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             X_pred, y_pred = self._sample_data(X, y)
             X_pred, y_pred = X_pred.to(self.device), y_pred.to(self.device)
             self.n_classes_ = len(torch.unique(y_pred).cpu().numpy())
-
-            rf, pca, main_network = self._model(X_pred, y_pred, self.n_classes_)
-
+            with torch.no_grad():
+                rf, pca, main_network, nnbias = self._model(X_pred, y_pred, self.n_classes_)
             if self.optimization == "ensemble_optimize":
-                rf, pca, main_network, self._model.nn_bias = fine_tune_main_network(
+                rf, pca, main_network, nn_bias = fine_tune_main_network(
                     self._cfg,
                     X_pred,
                     y_pred,
@@ -329,12 +354,12 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                     rf,
                     pca,
                     main_network,
-                    self._model.nn_bias,
+                    nnbias,
                     self.device,
                     self.optimize_steps,
                     self.batch_size,
                 )
-            self._store_network(rf, pca, main_network, X_pred, y_pred)
+            self._store_network(rf, pca, main_network, nnbias, X_pred, y_pred)
 
         if self.optimization == "optimize" and self.optimize_steps > 0:
             assert (
@@ -344,7 +369,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 self._rfs[0],
                 self._pcas[0],
                 self._main_networks[0],
-                self._model.nn_bias,
+                self._nnbias[0],
             ) = fine_tune_main_network(
                 self._cfg,
                 X,
@@ -353,7 +378,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 self._rfs[0],
                 self._pcas[0],
                 self._main_networks[0],
-                self._model.nn_bias,
+                self._nnbias[0],
                 self.device,
                 self.optimize_steps,
                 self.batch_size,
@@ -373,11 +398,13 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 orig_X = X_batch
                 yhats = []
                 for jj in range(len(self._main_networks)):
-                    main_network = self._main_networks[jj]
-                    rf = self._rfs[jj]
-                    pca = self._pcas[jj]
-                    X_pred = self._X_preds[jj]
-                    y_pred = self._y_preds[jj]
+                    main_network = self._move_to_device(self._main_networks[jj])
+                    rf = self._move_to_device(self._rfs[jj])
+                    pca = self._move_to_device(self._pcas[jj])
+                    nnbias = self._move_to_device(self._nnbias[jj])
+                    X_pred = self._move_to_device(self._X_preds[jj])
+                    y_pred = self._move_to_device(self._y_preds[jj])
+
                     if self.feature_bagging:
                         X_ = X_batch[:, self.selected_features[jj]]
                         orig_X_ = orig_X[:, self.selected_features[jj]]
@@ -399,7 +426,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                         outputs_pred, intermediate_activations_pred = forward_main_network(
                             X_pred_, main_network
                         )
-                        for bb, bias in enumerate(self._model.nn_bias):
+                        for bb, bias in enumerate(nnbias):
                             if bb == 0:
                                 outputs = nn_bias_logits(
                                     outputs, orig_X_, X_pred, y_pred, bias, self.n_classes_, self.nn_bias_mini_batches
@@ -411,7 +438,14 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
 
                     predicted = F.softmax(outputs, dim=1)
                     yhats.append(predicted)
-
+                    
+                    for data in [rf, pca, main_network, nnbias, X_pred, y_pred, 
+                                 X_transformed, outputs, intermediate_activations]:
+                        data = self._move_to_cpu(data)
+                    if self.nn_bias:
+                        for data in [X_pred_, outputs_pred, intermediate_activations_pred]:
+                            data = self._move_to_cpu(data)
+                    
                 yhats = torch.stack(yhats)
                 yhats = torch.mean(yhats, axis=0)
                 yhats = yhats.cpu().numpy()

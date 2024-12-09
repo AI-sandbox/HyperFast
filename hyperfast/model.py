@@ -137,4 +137,4 @@ class HyperFast(nn.Module):
         out, last_linear_layer = forward_linear_layer(out, weights, n_classes)
         main_network.append(last_linear_layer)
 
-        return rf, self.pca, main_network
+        return rf, self.pca, main_network, self.nn_bias
