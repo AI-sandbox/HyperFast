@@ -234,7 +234,7 @@ def fine_tune_main_network(
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(main_model.parameters(), lr=cfg.lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.1, patience=10, verbose=True
+        optimizer, mode="min", factor=0.1, patience=10
     )
 
     for step in range(optimize_steps):
