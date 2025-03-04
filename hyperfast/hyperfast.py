@@ -146,6 +146,11 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         tags["allow_nan"] = True
         return tags
 
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.input_tags.allow_nan = True
+        return tags
+
     def _preprocess_fitting_data(
         self,
         x: np.ndarray | pd.DataFrame,
