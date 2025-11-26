@@ -1,5 +1,9 @@
 # HyperFast : Instant Classification for Tabular Data
 
+**[Update Nov 26, 2025]** Interested in more accurate tabular data classification and support for regression? See our new model [iLTM: Integrated Large Tabular Model](https://github.com/AI-sandbox/iLTM) ([arXiv](https://arxiv.org/abs/2511.15941)).
+
+---
+
 [HyperFast](https://arxiv.org/abs/2402.14335) is a hypernetwork designed for fast classification of tabular data, capable of scaling to large datasets. Utilizing a meta-trained hypernetwork, HyperFast generates a dataset-specific target network in a single forward pass, eliminating the need for time-consuming model training.
 
 
