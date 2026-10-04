@@ -76,6 +76,39 @@ class ClassifierFineTuningTests(unittest.TestCase):
     def test_ensemble_fit_stores_learned_bias_cuda(self):
         self.check_stored_bias('cuda')
 
+    def check_fit_independence(self, optimization, n_ensemble):
+        network = self.network('cpu')
+        checkpoint = {name: value.detach().clone()
+                      for name, value in network.state_dict().items()}
+
+        def assert_checkpoint_unchanged():
+            for name, value in network.state_dict().items():
+                torch.testing.assert_close(value, checkpoint[name], rtol=0, atol=0)
+
+        with patch.object(api, 'config', self.config), \
+                patch.object(api.HyperFastClassifier, '_initialize_model', return_value=network):
+            first = self.classifier(optimization=optimization, n_ensemble=n_ensemble)
+            first.fit(self.X, self.y)
+            expected = first.predict_proba(self.X)
+            assert_checkpoint_unchanged()
+
+            intervening = self.classifier(optimization=optimization, n_ensemble=n_ensemble)
+            intervening.fit(self.X, 1 - self.y)
+            assert_checkpoint_unchanged()
+            np.testing.assert_array_equal(first.predict_proba(self.X), expected)
+
+            repeated = self.classifier(optimization=optimization, n_ensemble=n_ensemble)
+            repeated.fit(self.X, self.y)
+            assert_checkpoint_unchanged()
+            np.testing.assert_array_equal(repeated.predict_proba(self.X), expected)
+            np.testing.assert_array_equal(first.predict_proba(self.X), expected)
+
+    def test_ensemble_fits_are_independent(self):
+        self.check_fit_independence('ensemble_optimize', 2)
+
+    def test_full_optimization_fits_are_independent(self):
+        self.check_fit_independence('optimize', 1)
+
     def check_full_optimization(self, device, feature_bagging):
         network = self.network(device)
         original = network.nn_bias.detach().clone()
