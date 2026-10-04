@@ -59,15 +59,16 @@ print(f"Accuracy: {accuracy * 100:.2f}%")
 
 ```python
 param_grid = {
-    'n_ensemble': [1, 4, 8, 16, 32],
+    'n_ensemble': [8, 16, 32],
     'batch_size': [1024, 2048],
     'nn_bias': [True, False],
     'stratify_sampling': [True, False],
-    'optimization': [None, 'optimize', 'ensemble_optimize'],
-    'optimize_steps': [1, 4, 8, 16, 32, 64, 128],
-    'seed': list(range(10))
+    'optimization': [None, 'ensemble_optimize'],
+    'optimize_steps': [4, 8, 16, 32, 64],
 }
 ```
+
+`optimize_steps` only applies when `optimization='ensemble_optimize'`, omit it when `optimization=None`.
 
 ## License
 
