@@ -140,8 +140,7 @@ class ClassifierFineTuningTests(unittest.TestCase):
     def test_full_optimization_respects_feature_bagging_cuda(self):
         self.check_full_optimization('cuda', True)
 
-    @unittest.skipUnless(hasattr(api, 'LabelAdapter'), 'Label adapter is not available')
-    def test_padding_with_label_adapter_and_feature_bagging(self):
+    def test_padding_with_many_classes_and_feature_bagging(self):
         network = self.network('cpu')
         with patch.object(api, 'config', self.config), \
                 patch.object(api.HyperFastClassifier, '_initialize_model', return_value=network), \

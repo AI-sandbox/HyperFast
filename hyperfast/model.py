@@ -95,7 +95,7 @@ class HyperFast(nn.Module):
             row = torch.cat((out[ii], pca_global_mean, pca_perclass_mean[lab_index]))
             pca_concat.append(row)
         pca_output = torch.vstack(pca_concat)
-        y_onehot = F.one_hot(y, self.max_categories)
+        y_onehot = F.one_hot(y % self.max_categories, self.max_categories)
 
         main_network = []
         for n in range(self.main_n_layers - 1):

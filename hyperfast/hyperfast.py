@@ -272,6 +272,8 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             # Stratified sampling
             print("Using stratified sampling")
             classes, class_counts = torch.unique(y, return_counts=True)
+            if len(classes) > self.batch_size:
+                classes = classes[torch.randperm(len(classes))[: self.batch_size]]
             samples_per_class = self.batch_size // len(classes)
             sampled_indices = []
 
