@@ -287,10 +287,6 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             # Original random sampling
             sampled_indices = torch.randperm(len(X))[: self.batch_size]
         X_pred, y_pred = X[sampled_indices].flatten(start_dim=1), y[sampled_indices]
-        if X_pred.shape[0] < self._cfg.n_dims:
-            n_repeats = math.ceil(self._cfg.n_dims / X_pred.shape[0])
-            X_pred = torch.repeat_interleave(X_pred, n_repeats, axis=0)
-            y_pred = torch.repeat_interleave(y_pred, n_repeats, axis=0)
         return X_pred, y_pred
 
     def _move_to_device(self, data, device=None):
@@ -348,10 +344,15 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         for n in range(self.n_ensemble):
             X_pred, y_pred = self._sample_data(X, y)
             X_pred, y_pred = X_pred.to(self.device), y_pred.to(self.device)
+            X_context, y_context = X_pred, y_pred
+            if len(X_context) < self._cfg.n_dims:
+                repeats = math.ceil(self._cfg.n_dims / len(X_context))
+                X_context = torch.repeat_interleave(X_context, repeats, dim=0)
+                y_context = torch.repeat_interleave(y_context, repeats, dim=0)
             with torch.no_grad():
-                rf, pca, main_network, nnbias = self._model(X_pred, y_pred, self.n_classes_)
+                rf, pca, main_network, nnbias = self._model(X_context, y_context, self.n_classes_)
             if self.optimization == "ensemble_optimize":
-                rf, pca, main_network, nn_bias = fine_tune_main_network(
+                rf, pca, main_network, nnbias = fine_tune_main_network(
                     self._cfg,
                     X_pred,
                     y_pred,
@@ -370,6 +371,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             assert (
                 len(self._main_networks) == 1
             ), '"optimize" only works with n_ensemble=1. For n_ensemble > 1, use None or "ensemble_optimize" instead.'
+            X_fit = X[:, self.selected_features[0]] if self.feature_bagging else X
             (
                 self._rfs[0],
                 self._pcas[0],
@@ -377,7 +379,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 self._nnbias[0],
             ) = fine_tune_main_network(
                 self._cfg,
-                X,
+                X_fit,
                 y,
                 self.n_classes_,
                 self._rfs[0],

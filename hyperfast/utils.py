@@ -125,7 +125,7 @@ class MainNetworkTrainable(nn.Module):
         self.pca = pca
         self.clip_data_value = cfg.clip_data_value
         self.main_network = main_network
-        self.nn_bias = nn_bias
+        self.nn_bias = nn.Parameter(nn_bias.detach().clone())
         self.use_nn_bias = cfg.nn_bias
         self.device = cfg.device
 
@@ -173,7 +173,7 @@ class MainNetworkTrainable(nn.Module):
                 if n == len(self.layers) - 2:
                     intermediate_activations.append(X)
 
-        if self.use_nn_bias:
+        if self.use_nn_bias and X.shape[0] > 1:
             assert y is not None
             for ii, bias in enumerate(self.nn_bias):
                 nn = NN(intermediate_activations[ii], y)
@@ -353,6 +353,9 @@ class NN:
                 f"{name} wasn't trained. Need to execute {name}.train() first"
             )
 
+        if self.train_pts.shape[0] < 2:
+            raise ValueError("Leave-one-out prediction requires at least two training rows")
+
         if not mini_batches:
             dist = distance_matrix(self.train_pts, self.train_pts, self.p)
             dist.fill_diagonal_(float("inf"))
@@ -364,7 +367,8 @@ class NN:
             for ii in range(num_batches):
                 x_ = self.train_pts[batch_size * ii:batch_size * (ii + 1), :]
                 dist = distance_matrix(x_, self.train_pts, self.p)
-                dist.fill_diagonal_(float("inf"))
+                rows = torch.arange(x_.shape[0], device=dist.device)
+                dist[rows, rows + batch_size * ii] = float("inf")
                 labels_ = torch.argmin(dist, dim=1)
                 labels.append(labels_)
             labels = torch.cat(labels)
