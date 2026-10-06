@@ -86,6 +86,7 @@ class TorchPCA:
                 f"n_components should be <= min(n_samples: {n_samples}, n_features: {n_features})"
             )
 
+        constant_data = torch.all(X == X[:1])
         self.mean_ = torch.mean(X, axis=0)
         X -= self.mean_
 
@@ -96,6 +97,11 @@ class TorchPCA:
         elif self.fit == "lowrank":
             U, S, Vt = torch.pca_lowrank(X)
 
+        tolerance = S[0] * max(X.shape) * torch.finfo(S.dtype).eps
+        supported = (S > tolerance) & ~constant_data
+        S = S.masked_fill(~supported, 0)
+        Vt = Vt.masked_fill(~supported[:, None], 0)
+        self.n_supported_components_ = int(supported[:n_components].sum().item())
         self.components_ = Vt[:n_components]
         self.n_components_ = n_components
 
@@ -145,6 +151,11 @@ class MainNetworkTrainable(nn.Module):
             if cfg.torch_pca
             else nn.Parameter(torch.from_numpy(pca.components_))
         )
+        self.register_buffer(
+            "pca_padding",
+            torch.arange(pca.components_.shape[0])
+            >= getattr(pca, "n_supported_components_", pca.components_.shape[0]),
+        )
 
         self.layers = nn.ModuleList()
         for matrix, bias in main_network:
@@ -158,6 +169,7 @@ class MainNetworkTrainable(nn.Module):
         X = self.rf(X)
         X = X - self.pca_mean
         X = self.pca_components(X)
+        X = X.masked_fill(self.pca_padding, 0)
         X = torch.clamp(X, -self.clip_data_value, self.clip_data_value)
 
         for n, layer in enumerate(self.layers):

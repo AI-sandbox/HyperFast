@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
@@ -68,7 +69,15 @@ class HyperFast(nn.Module):
         if self.torch_pca:
             X = self.pca.fit_transform(X)
         else:
-            X = torch.from_numpy(self.pca.fit_transform(X.cpu().numpy())).to(X.device)
+            data = X.cpu().numpy()
+            scores = self.pca.fit_transform(data)
+            singular_values = self.pca.singular_values_
+            tolerance = singular_values[0] * max(data.shape) * np.finfo(data.dtype).eps
+            supported = (singular_values > tolerance) & ~np.all(data == data[:1])
+            self.pca.n_supported_components_ = int(supported.sum())
+            self.pca.components_[~supported] = 0
+            scores[:, ~supported] = 0
+            X = torch.from_numpy(scores).to(X.device)
         X = torch.clamp(X, -self.clip_data_value, self.clip_data_value)
 
         out = X
