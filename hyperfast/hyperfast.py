@@ -271,20 +271,30 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         if self.stratify_sampling:
             # Stratified sampling
             print("Using stratified sampling")
-            classes, class_counts = torch.unique(y, return_counts=True)
-            if len(classes) > self.batch_size:
-                classes = classes[torch.randperm(len(classes))[: self.batch_size]]
-            samples_per_class = self.batch_size // len(classes)
-            sampled_indices = []
+            if len(X) <= self.batch_size:
+                sampled_indices = torch.randperm(len(X))
+            else:
+                classes, class_counts = torch.unique(y, return_counts=True)
+                quotas = torch.zeros_like(class_counts)
+                remaining = self.batch_size
+                while remaining:
+                    available = (quotas < class_counts).nonzero(as_tuple=True)[0]
+                    per_class = remaining // len(available)
+                    if per_class == 0:
+                        chosen = available[torch.randperm(len(available))[:remaining]]
+                        quotas[chosen] += 1
+                        break
+                    added = (class_counts[available] - quotas[available]).clamp(max=per_class)
+                    quotas[available] += added
+                    remaining -= int(added.sum())
 
-            for cls in classes:
-                cls_indices = (y == cls).nonzero(as_tuple=True)[0]
-                n_samples = min(samples_per_class, len(cls_indices))
-                cls_sampled_indices = cls_indices[torch.randperm(len(cls_indices))[:n_samples]]
-                sampled_indices.append(cls_sampled_indices)
-
-            sampled_indices = torch.cat(sampled_indices)
-            sampled_indices = sampled_indices[torch.randperm(len(sampled_indices))]
+                sampled_indices = []
+                for cls, n_samples in zip(classes, quotas.tolist()):
+                    if n_samples:
+                        cls_indices = (y == cls).nonzero(as_tuple=True)[0]
+                        sampled_indices.append(cls_indices[torch.randperm(len(cls_indices))[:n_samples]])
+                sampled_indices = torch.cat(sampled_indices)
+                sampled_indices = sampled_indices[torch.randperm(len(sampled_indices))]
         else:
             # Original random sampling
             sampled_indices = torch.randperm(len(X))[: self.batch_size]
