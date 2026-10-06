@@ -44,7 +44,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         nn_bias (bool): Whether to use nearest neighbor bias.
         nn_bias_mini_batches (bool): Whether to use mini-batches of size 128 for nearest neighbor bias.
         optimization (str or None): Strategy for optimization, can be None, 'optimize', or 'ensemble_optimize'.
-        optimize_steps (int): Number of optimization steps.
+        optimize_steps (int): Number of minibatch optimizer updates per model.
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
         seed (int): Random seed for reproducibility.
         custom_path (str or None): If str, this custom path will be used to load the Hyperfast model instead of the default path.
@@ -354,10 +354,11 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             with torch.no_grad():
                 rf, pca, main_network, nnbias = self._model(X_context, y_context, self.n_classes_)
             if self.optimization == "ensemble_optimize":
+                X_fit = X[:, self.selected_features[n]] if self.feature_bagging else X
                 rf, pca, main_network, nnbias = fine_tune_main_network(
                     self._cfg,
-                    X_pred,
-                    y_pred,
+                    X_fit,
+                    y,
                     self.n_classes_,
                     rf,
                     pca,
@@ -367,6 +368,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                     self.optimize_steps,
                     self.batch_size,
                 )
+                del X_fit
             self._store_network(rf, pca, main_network, nnbias, X_pred, y_pred)
 
         if self.optimization == "optimize" and self.optimize_steps > 0:

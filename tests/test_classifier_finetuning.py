@@ -72,6 +72,39 @@ class ClassifierFineTuningTests(unittest.TestCase):
     def test_ensemble_fit_stores_learned_bias(self):
         self.check_stored_bias('cpu')
 
+    def check_ensemble_training_data(self, feature_bagging, device='cpu'):
+        network = self.network(device)
+        with patch.object(api, 'config', self.config), \
+                patch.object(api.HyperFastClassifier, '_initialize_model', return_value=network), \
+                patch.object(api, 'fine_tune_main_network', wraps=api.fine_tune_main_network) as fine_tune:
+            classifier = self.classifier(device, n_ensemble=3, batch_size=5,
+                                         feature_bagging=feature_bagging,
+                                         feature_bagging_size=3)
+            classifier.fit(self.X, self.y)
+            expected_X = classifier._preprocess_test_data(self.X)
+            self.assertEqual(fine_tune.call_count, 3)
+            for member, call in enumerate(fine_tune.call_args_list):
+                used_X, used_y = call.args[1:3]
+                expected = (expected_X[:, classifier.selected_features[member]]
+                            if feature_bagging else expected_X)
+                torch.testing.assert_close(used_X, expected)
+                torch.testing.assert_close(used_y, torch.from_numpy(self.y))
+                self.assertEqual(used_X.device.type, 'cpu')
+                self.assertEqual(used_y.device.type, 'cpu')
+                self.assertEqual(len(classifier._X_preds[member]), 5)
+                self.assertEqual(len(classifier._y_preds[member]), 5)
+            self.check_probabilities(classifier, self.X)
+
+    def test_ensemble_fine_tunes_on_all_rows(self):
+        self.check_ensemble_training_data(False)
+
+    def test_ensemble_full_data_respects_each_feature_subset(self):
+        self.check_ensemble_training_data(True)
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is not available')
+    def test_ensemble_full_data_stays_on_cpu_with_cuda_training(self):
+        self.check_ensemble_training_data(True, 'cuda')
+
     @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is not available')
     def test_ensemble_fit_stores_learned_bias_cuda(self):
         self.check_stored_bias('cuda')

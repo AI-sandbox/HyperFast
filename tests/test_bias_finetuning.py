@@ -105,7 +105,7 @@ class FineTuningTests(unittest.TestCase):
         original = input_bias.detach().clone()
         parts = fine_tune_main_network(
             make_config(), X, y, 2, *make_network_parts(), input_bias,
-            device="cpu", optimize_steps=2, batch_size=2,
+            device="cpu", optimize_steps=3, batch_size=2,
         )
         trained_bias = parts[-1]
         self.assertIsInstance(trained_bias, nn.Parameter)
@@ -113,6 +113,48 @@ class FineTuningTests(unittest.TestCase):
         self.assertFalse(torch.equal(trained_bias.detach(), original))
         torch.testing.assert_close(input_bias.detach(), original, rtol=0, atol=0)
         self.assertIsNone(input_bias.grad)
+
+    def test_fine_tuning_cycles_all_rows_with_fixed_update_count(self):
+        torch.manual_seed(7)
+        X, y = make_data()
+        X = torch.cat([X, torch.tensor([[1.4, 1.8]])])
+        y = torch.cat([y, torch.tensor([1])])
+        batches = []
+        forward = MainNetworkTrainable.forward
+
+        def capture(model, inputs, targets):
+            batches.append((inputs.detach().clone(), targets.detach().clone()))
+            return forward(model, inputs, targets)
+
+        with patch.object(MainNetworkTrainable, 'forward', new=capture), \
+                patch.object(torch.optim.lr_scheduler.ReduceLROnPlateau,
+                             'step', autospec=True) as schedule:
+            fine_tune_main_network(
+                make_config(), X, y, 2, *make_network_parts(), torch.tensor([0.7, 0.9]),
+                device='cpu', optimize_steps=7, batch_size=2)
+        self.assertEqual([len(inputs) for inputs, _ in batches], [2, 2, 1, 2, 2, 1, 2])
+        self.assertEqual(schedule.call_count, 7)
+        for start in (0, 3):
+            inputs = torch.cat([b[0] for b in batches[start:start + 3]])
+            targets = torch.cat([b[1] for b in batches[start:start + 3]])
+            order = inputs[:, 0].argsort()
+            torch.testing.assert_close(inputs[order], X)
+            torch.testing.assert_close(targets[order], y)
+
+    def test_fine_tuning_stops_before_completing_an_epoch(self):
+        X, y = make_data()
+        forward = MainNetworkTrainable.forward
+        seen = []
+
+        def capture(model, inputs, targets):
+            seen.append(len(inputs))
+            return forward(model, inputs, targets)
+
+        with patch.object(MainNetworkTrainable, 'forward', new=capture):
+            fine_tune_main_network(
+                make_config(), X, y, 2, *make_network_parts(), torch.tensor([0.7, 0.9]),
+                device='cpu', optimize_steps=1, batch_size=2)
+        self.assertEqual(seen, [2])
 
 
 if __name__ == "__main__":

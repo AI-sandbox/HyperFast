@@ -249,7 +249,8 @@ def fine_tune_main_network(
         optimizer, mode="min", factor=0.1, patience=10
     )
 
-    for step in range(optimize_steps):
+    step = 0
+    while step < optimize_steps:
         for inputs, targets in dataloader:
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
@@ -257,13 +258,10 @@ def fine_tune_main_network(
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
-            # print(f"Step: [{step+1}/{optimize_steps}], Loss: {loss.item()}")
-
-        if scheduler is not None:
-            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(loss.item())
-            else:
-                scheduler.step()
+            scheduler.step(loss.item())
+            step += 1
+            if step == optimize_steps:
+                break
     return main_model.get_main_network_parts()
 
 
