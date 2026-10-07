@@ -127,13 +127,14 @@ class FineTuningTests(unittest.TestCase):
             return forward(model, inputs, targets)
 
         with patch.object(MainNetworkTrainable, 'forward', new=capture), \
-                patch.object(torch.optim.lr_scheduler.ReduceLROnPlateau,
-                             'step', autospec=True) as schedule:
+                patch.object(torch.optim.lr_scheduler, 'CosineAnnealingLR',
+                             wraps=torch.optim.lr_scheduler.CosineAnnealingLR) as schedule:
             fine_tune_main_network(
                 make_config(), X, y, 2, *make_network_parts(), torch.tensor([0.7, 0.9]),
                 device='cpu', optimize_steps=7, batch_size=2)
         self.assertEqual([len(inputs) for inputs, _ in batches], [2, 2, 1, 2, 2, 1, 2])
-        self.assertEqual(schedule.call_count, 7)
+        self.assertEqual(schedule.call_count, 1)
+        self.assertEqual(schedule.call_args.kwargs['T_max'], 3)
         for start in (0, 3):
             inputs = torch.cat([b[0] for b in batches[start:start + 3]])
             targets = torch.cat([b[1] for b in batches[start:start + 3]])

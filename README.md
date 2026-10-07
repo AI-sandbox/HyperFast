@@ -63,12 +63,15 @@ param_grid = {
     'batch_size': [1024, 2048],
     'nn_bias': [True, False],
     'stratify_sampling': [True, False],
-    'optimization': [None, 'ensemble_optimize'],
-    'optimize_steps': [4, 8, 16, 32, 64],
 }
 ```
 
-`optimize_steps` only applies when `optimization='ensemble_optimize'`, omit it when `optimization=None`.
+Pass `model.fit(X_train, y_train, eval_set=(X_val, y_val))` to select each
+ensemble member's best validation checkpoint, including its initial weights.
+Binary tasks use ROC-AUC and multiclass tasks use log loss. Validation rows are
+excluded from preprocessing fitting, weight generation, gradient updates, and
+nearest-neighbor references. Without an explicit validation set, fine-tuning
+reserves a stratified 10% holdout before preprocessing.
 
 ## License
 

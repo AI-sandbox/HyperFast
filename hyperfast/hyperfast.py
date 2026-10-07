@@ -22,6 +22,8 @@ from sklearn.utils import column_or_1d
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from .utils import (
     seed_everything,
     transform_data_for_main_network,
@@ -44,7 +46,8 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         nn_bias (bool): Whether to use nearest neighbor bias.
         nn_bias_mini_batches (bool): Whether to use mini-batches of size 128 for nearest neighbor bias.
         optimization (str or None): Strategy for optimization, can be None, 'optimize', or 'ensemble_optimize'.
-        optimize_steps (int): Number of minibatch optimizer updates per model.
+        optimize_steps (int or None): Optional fixed optimizer-update cap. By default,
+            validation selects the best checkpoint within finetuning_max_epochs.
         torch_pca (bool): Whether to use PyTorch-based PCA optimized for GPU (fast) or scikit-learn PCA (slower).
         seed (int): Random seed for reproducibility.
         custom_path (str or None): If str, this custom path will be used to load the Hyperfast model instead of the default path.
@@ -62,7 +65,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         nn_bias: bool = False,
         nn_bias_mini_batches: bool = True,
         optimization: str | None = "ensemble_optimize",
-        optimize_steps: int = 64,
+        optimize_steps: int | None = None,
         torch_pca: bool = True,
         seed: int = 3,
         custom_path: str | None = None,
@@ -70,6 +73,15 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         feature_bagging: bool = False,
         feature_bagging_size: int = 3000,
         cat_features: List[int] | None = None,
+        finetuning_max_epochs: int = 2048,
+        finetuning_lr: float = 1e-4,
+        finetuning_dropout: float = 0.15,
+        gradient_clip_norm: float = 1.18,
+        scheduler_min_lr: float = 6e-7,
+        patience_epochs: int = 50,
+        cooldown_checks: int = 2,
+        validation_fraction: float = 0.1,
+        validation_metric: str = 'auto',
     ) -> None:
         self.device = device
         self.n_ensemble = n_ensemble
@@ -85,6 +97,15 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.feature_bagging = feature_bagging
         self.feature_bagging_size = feature_bagging_size
         self.cat_features = cat_features
+        self.finetuning_max_epochs = finetuning_max_epochs
+        self.finetuning_lr = finetuning_lr
+        self.finetuning_dropout = finetuning_dropout
+        self.gradient_clip_norm = gradient_clip_norm
+        self.scheduler_min_lr = scheduler_min_lr
+        self.patience_epochs = patience_epochs
+        self.cooldown_checks = cooldown_checks
+        self.validation_fraction = validation_fraction
+        self.validation_metric = validation_metric
 
         seed_everything(self.seed)
         self._cfg = self._load_config(config, self.device, self.torch_pca, self.nn_bias)
@@ -257,6 +278,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self._nnbias = []
         self._X_preds = []
         self._y_preds = []
+        self.finetuning_history_ = []
         if self.feature_bagging:
             self.selected_features = []
 
@@ -339,8 +361,46 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self._X_preds.append(X_pred)
         self._y_preds.append(y_pred)
 
+    def _validation_split(self, X, y, eval_set):
+        if not 0 <= self.validation_fraction < 1:
+            raise ValueError('validation_fraction must be in [0, 1)')
+        if eval_set is not None:
+            if not isinstance(eval_set, tuple) or len(eval_set) != 2:
+                raise ValueError('eval_set must be a tuple (X_val, y_val)')
+            X_val, y_val = eval_set
+            if X_val is None or y_val is None:
+                raise ValueError('Both validation features and labels are required')
+            return X, y, X_val, y_val
+        if self.optimization is None or self.optimize_steps is not None or not self.validation_fraction:
+            return X, y, None, None
+        X, y = np.asarray(X), column_or_1d(y)
+        _, counts = np.unique(y, return_counts=True)
+        n_val = math.ceil(len(y) * self.validation_fraction)
+        if (counts.min() < 2 or n_val < len(counts) or len(y) - n_val < len(counts)):
+            raise ValueError('Too few examples for an internal stratified validation split; '
+                             'supply eval_set or set validation_fraction=0')
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=self.validation_fraction, random_state=self.seed, stratify=y)
+        return X_train, y_train, X_val, y_val
+
+    def _fine_tune_predictor(self, X, y, rf, pca, network, bias, X_ref, y_ref,
+                             X_val, y_val):
+        info = {}
+        parts = fine_tune_main_network(
+            self._cfg, X, y, self.n_classes_, rf, pca, network, bias,
+            self.device, self.optimize_steps, self.batch_size,
+            X_val=X_val, y_val=y_val, reference_X=X_ref, reference_y=y_ref,
+            nn_bias_mini_batches=self.nn_bias_mini_batches,
+            max_epochs=self.finetuning_max_epochs, patience_epochs=self.patience_epochs,
+            cooldown_checks=self.cooldown_checks, finetuning_dropout=self.finetuning_dropout,
+            gradient_clip_norm=self.gradient_clip_norm, scheduler_min_lr=self.scheduler_min_lr,
+            validation_metric=self.validation_metric, training_info=info)
+        self.finetuning_history_.append(info)
+        return parts
+
     def fit(
-        self, X: np.ndarray | pd.DataFrame, y: np.ndarray | pd.Series
+        self, X: np.ndarray | pd.DataFrame, y: np.ndarray | pd.Series,
+        eval_set: tuple | None = None,
     ) -> HyperFastClassifier:
         """
         Generates a main model for the given data.
@@ -348,9 +408,30 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         Args:
             X (array-like): Input features.
             y (array-like): Target values.
+            eval_set: Optional (X_val, y_val), used only for checkpoint selection.
+                Without it, epoch-based fine-tuning reserves validation_fraction
+                before fitting preprocessing or generating network weights.
         """
         seed_everything(self.seed)
+        if self.optimization not in (None, 'optimize', 'ensemble_optimize'):
+            raise ValueError('Invalid optimization strategy')
+        if self.optimization == 'optimize' and self.n_ensemble != 1:
+            raise ValueError('optimization="optimize" requires n_ensemble=1')
+        if self.n_ensemble < 1 or self.batch_size < 1 or self.finetuning_lr <= 0:
+            raise ValueError('n_ensemble, batch_size and finetuning_lr must be positive')
+        X, y, X_val, y_val = self._validation_split(X, y, eval_set)
         X, y = self._preprocess_fitting_data(X, y)
+        self._cfg.lr = self.finetuning_lr
+        if X_val is not None:
+            X_val = self._preprocess_test_data(X_val)
+            encoder = LabelEncoder()
+            encoder.classes_ = self.classes_
+            y_val = column_or_1d(y_val)
+            if not np.isin(y_val, self.classes_).all():
+                raise ValueError('Validation contains unseen labels')
+            y_val = torch.from_numpy(encoder.transform(y_val)).long()
+            if len(X_val) == 0 or len(X_val) != len(y_val):
+                raise ValueError('Validation features and labels must be nonempty and aligned')
         self._initialize_fit_attributes()
 
         for n in range(self.n_ensemble):
@@ -365,23 +446,15 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 rf, pca, main_network, nnbias = self._model(X_context, y_context, self.n_classes_)
             if self.optimization == "ensemble_optimize":
                 X_fit = X[:, self.selected_features[n]] if self.feature_bagging else X
-                rf, pca, main_network, nnbias = fine_tune_main_network(
-                    self._cfg,
-                    X_fit,
-                    y,
-                    self.n_classes_,
-                    rf,
-                    pca,
-                    main_network,
-                    nnbias,
-                    self.device,
-                    self.optimize_steps,
-                    self.batch_size,
-                )
+                X_eval = (X_val[:, self.selected_features[n]]
+                          if X_val is not None and self.feature_bagging else X_val)
+                rf, pca, main_network, nnbias = self._fine_tune_predictor(
+                    X_fit, y, rf, pca, main_network, nnbias,
+                    X_pred, y_pred, X_eval, y_val)
                 del X_fit
             self._store_network(rf, pca, main_network, nnbias, X_pred, y_pred)
 
-        if self.optimization == "optimize" and self.optimize_steps > 0:
+        if self.optimization == "optimize":
             assert (
                 len(self._main_networks) == 1
             ), '"optimize" only works with n_ensemble=1. For n_ensemble > 1, use None or "ensemble_optimize" instead.'
@@ -391,19 +464,13 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 self._pcas[0],
                 self._main_networks[0],
                 self._nnbias[0],
-            ) = fine_tune_main_network(
-                self._cfg,
-                X_fit,
-                y,
-                self.n_classes_,
-                self._rfs[0],
-                self._pcas[0],
-                self._main_networks[0],
-                self._nnbias[0],
-                self.device,
-                self.optimize_steps,
-                self.batch_size,
-            )
+            ) = self._fine_tune_predictor(
+                X_fit, y, self._rfs[0], self._pcas[0], self._main_networks[0],
+                self._nnbias[0], self._X_preds[0], self._y_preds[0],
+                X_val[:, self.selected_features[0]] if X_val is not None and self.feature_bagging else X_val,
+                y_val)
+
+        self.best_steps_ = [info['best_step'] for info in self.finetuning_history_]
 
         return self
 

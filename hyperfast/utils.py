@@ -2,6 +2,7 @@ import os
 import random
 import numpy as np
 import math
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -124,7 +125,7 @@ class TorchPCA:
 
 
 class MainNetworkTrainable(nn.Module):
-    def __init__(self, cfg, n_classes, rf, pca, main_network, nn_bias):
+    def __init__(self, cfg, n_classes, rf, pca, main_network, nn_bias, finetuning_dropout=0.0):
         super(MainNetworkTrainable, self).__init__()
         self.cfg = cfg
         self.n_classes = n_classes
@@ -134,6 +135,7 @@ class MainNetworkTrainable(nn.Module):
         self.nn_bias = nn.Parameter(nn_bias.detach().clone())
         self.use_nn_bias = cfg.nn_bias
         self.device = cfg.device
+        self.finetuning_dropout = finetuning_dropout
 
         self.rf = rf
         self.rf[0].weight.requires_grad = True
@@ -164,7 +166,7 @@ class MainNetworkTrainable(nn.Module):
             linear_layer.bias = nn.Parameter(bias)
             self.layers.append(linear_layer)
 
-    def forward(self, X, y=None):
+    def _forward_features(self, X):
         intermediate_activations = [X]
         X = self.rf(X)
         X = X - self.pca_mean
@@ -182,8 +184,14 @@ class MainNetworkTrainable(nn.Module):
 
             if n < len(self.layers) - 1:
                 X = F.relu(X)
+                X = F.dropout(X, p=self.finetuning_dropout, training=self.training)
                 if n == len(self.layers) - 2:
                     intermediate_activations.append(X)
+
+        return X, intermediate_activations
+
+    def forward(self, X, y=None):
+        X, intermediate_activations = self._forward_features(X)
 
         if self.use_nn_bias and X.shape[0] > 1:
             assert y is not None
@@ -193,6 +201,21 @@ class MainNetworkTrainable(nn.Module):
                 preds_onehot = F.one_hot(preds, self.n_classes)
                 X[preds_onehot.bool()] += bias
         return X
+
+    def validation_logits(self, X, reference_X, reference_y, mini_batches=True,
+                          reference_hidden=None):
+        outputs, activations = self._forward_features(X)
+        if self.use_nn_bias:
+            if reference_X is None or reference_y is None:
+                raise ValueError('Nearest-neighbor validation requires training references')
+            if reference_hidden is None:
+                _, reference_activations = self._forward_features(reference_X)
+                reference_hidden = reference_activations[1]
+            for query, reference, bias in zip(
+                    activations, [reference_X, reference_hidden], self.nn_bias):
+                outputs = nn_bias_logits(outputs, query, reference, reference_y,
+                                        bias, self.n_classes, mini_batches)
+        return outputs
 
     def get_main_network_parts(self):
         rf_reconstructed = self.rf
@@ -237,31 +260,145 @@ def fine_tune_main_network(
     device,
     optimize_steps,
     batch_size,
+    *,
+    X_val=None,
+    y_val=None,
+    reference_X=None,
+    reference_y=None,
+    nn_bias_mini_batches=True,
+    max_epochs=2048,
+    patience_epochs=50,
+    cooldown_checks=2,
+    finetuning_dropout=0.15,
+    gradient_clip_norm=1.18,
+    scheduler_min_lr=6e-7,
+    validation_metric='auto',
+    training_info=None,
 ):
     main_model = MainNetworkTrainable(
-        cfg, n_classes, rf, pca, main_network_layers, nn_bias
+        cfg, n_classes, rf, pca, main_network_layers, nn_bias,
+        finetuning_dropout=finetuning_dropout,
     ).to(device)
     dataset = TensorDataset(X, y)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(main_model.parameters(), lr=cfg.lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.1, patience=10
-    )
+    if (X_val is None) != (y_val is None):
+        raise ValueError('X_val and y_val must be supplied together')
+    if not len(dataset) or max_epochs < 1 or patience_epochs < 1:
+        raise ValueError('Training data, max_epochs and patience_epochs must be positive')
+    if optimize_steps is not None and optimize_steps < 0:
+        raise ValueError('optimize_steps must be nonnegative or None')
+    if not 0 <= finetuning_dropout < 1 or gradient_clip_norm <= 0:
+        raise ValueError('Invalid dropout or gradient_clip_norm')
+    if not 0 <= scheduler_min_lr <= cfg.lr or cooldown_checks < 0:
+        raise ValueError('Invalid scheduler_min_lr or cooldown_checks')
+    epochs = (max_epochs if optimize_steps is None else
+              min(max_epochs, max(1, math.ceil(optimize_steps / len(dataloader)))))
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs, eta_min=scheduler_min_lr)
+    metric = {'auto': 'auc' if n_classes == 2 else 'log_loss',
+              'auc': 'auc', 'roc_auc': 'auc', 'log_loss': 'log_loss',
+              'logloss': 'log_loss'}.get(validation_metric)
+    if metric is None or (metric == 'auc' and n_classes != 2):
+        raise ValueError('validation_metric must be auto, log_loss, or binary roc_auc')
+    if X_val is not None and (len(X_val) == 0 or len(X_val) != len(y_val)):
+        raise ValueError('Validation data must be nonempty and aligned')
+    if X_val is not None and metric == 'auc' and len(torch.unique(y_val)) < 2:
+        warnings.warn('Validation has one class; using log_loss instead of ROC-AUC', UserWarning)
+        metric = 'log_loss'
 
+    interval = len(dataloader) if len(dataloader) <= 4 else max(1, len(dataloader) // 4)
+    checks_per_epoch = math.ceil(len(dataloader) / interval)
+    patience_checks = patience_epochs * checks_per_epoch
+    best_score, best_state, best_step = None, None, 0
+    stale, cooldown, checks, step = 0, 0, 0, 0
+    history = []
+
+    def validate():
+        nonlocal best_score, best_state, best_step, stale, cooldown, checks
+        from sklearn.metrics import roc_auc_score
+        main_model.eval()
+        probabilities, targets = [], []
+        loss_sum = 0.0
+        with torch.no_grad():
+            ref_X = reference_X.to(device) if cfg.nn_bias else None
+            ref_y = reference_y.to(device) if cfg.nn_bias else None
+            ref_hidden = None
+            if cfg.nn_bias:
+                _, ref_activations = main_model._forward_features(ref_X)
+                ref_hidden = ref_activations[1]
+            for start in range(0, len(X_val), batch_size):
+                inputs = X_val[start:start + batch_size].to(device)
+                labels = y_val[start:start + batch_size].to(device)
+                outputs = main_model.validation_logits(
+                    inputs, ref_X, ref_y, nn_bias_mini_batches, ref_hidden)
+                loss_sum += F.cross_entropy(outputs, labels, reduction='sum').item()
+                if metric == 'auc':
+                    probabilities.append(outputs.softmax(dim=1)[:, 1].cpu().numpy())
+                    targets.append(labels.cpu().numpy())
+        score = (float(roc_auc_score(np.concatenate(targets), np.concatenate(probabilities)))
+                 if metric == 'auc' else loss_sum / len(X_val))
+        if not math.isfinite(score):
+            raise ValueError('Nonfinite validation metric during fine-tuning')
+        improved = best_score is None or (score > best_score if metric == 'auc' else score < best_score)
+        if improved:
+            best_score, best_step = score, step
+            best_state = {k: v.detach().cpu().clone() for k, v in main_model.state_dict().items()}
+            stale, cooldown = 0, cooldown_checks
+        elif cooldown:
+            cooldown -= 1
+        else:
+            stale += 1
+        checks += 1
+        history.append(dict(step=step, score=score, lr=optimizer.param_groups[0]['lr']))
+        main_model.train()
+
+    if cfg.nn_bias and X_val is not None and (reference_X is None or reference_y is None):
+        raise ValueError('Nearest-neighbor validation requires training references')
+    if X_val is not None:
+        validate()
     step = 0
-    while step < optimize_steps:
-        for inputs, targets in dataloader:
+    stop_reason = 'max_epochs'
+    epochs_done = 0
+    for epoch in range(epochs):
+        if optimize_steps == 0:
+            stop_reason = 'max_updates'
+            break
+        main_model.train()
+        for batch, (inputs, targets) in enumerate(dataloader, start=1):
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
             outputs = main_model(inputs, targets)
             loss = criterion(outputs, targets)
+            if not torch.isfinite(loss):
+                raise ValueError('Nonfinite training loss during fine-tuning')
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(main_model.parameters(), gradient_clip_norm,
+                                           error_if_nonfinite=True, foreach=False)
             optimizer.step()
-            scheduler.step(loss.item())
             step += 1
-            if step == optimize_steps:
+            capped = optimize_steps is not None and step >= optimize_steps
+            if X_val is not None and (batch % interval == 0 or batch == len(dataloader) or capped):
+                validate()
+            if stale >= patience_checks:
+                stop_reason = 'patience'
                 break
+            if capped:
+                stop_reason = 'max_updates'
+                break
+        epochs_done = epoch + 1
+        scheduler.step()
+        if stop_reason != 'max_epochs':
+            break
+    if best_state is not None:
+        main_model.load_state_dict(best_state)
+    main_model.eval()
+    if training_info is not None:
+        training_info.update(best_step=best_step if best_state is not None else step,
+                             best_score=best_score, validation_metric=metric,
+                             steps=step, epochs=epochs_done, validation_checks=checks,
+                             stop_reason=stop_reason, history=history)
     return main_model.get_main_network_parts()
 
 
