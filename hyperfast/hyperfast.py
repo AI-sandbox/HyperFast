@@ -77,12 +77,13 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         finetuning_max_epochs: int = 2048,
         finetuning_lr: float = 1e-4,
         finetuning_dropout: float = 0.15,
-        gradient_clip_norm: float = 1.18,
+        gradient_clip_norm: float | None = 1.18,
         scheduler_min_lr: float = 6e-7,
         patience_epochs: int = 50,
         cooldown_checks: int = 2,
         validation_fraction: float = 0.1,
         validation_metric: str = 'auto',
+        finetuning_scheduler: str = 'cosine',
     ) -> None:
         self.device = device
         self.n_ensemble = n_ensemble
@@ -107,6 +108,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.cooldown_checks = cooldown_checks
         self.validation_fraction = validation_fraction
         self.validation_metric = validation_metric
+        self.finetuning_scheduler = finetuning_scheduler
 
         seed_everything(self.seed)
         self._cfg = self._load_config(config, self.device, self.torch_pca, self.nn_bias)
@@ -398,6 +400,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 cooldown_checks=self.cooldown_checks, finetuning_dropout=self.finetuning_dropout,
                 gradient_clip_norm=self.gradient_clip_norm, scheduler_min_lr=self.scheduler_min_lr,
                 validation_metric=self.validation_metric, training_info=info,
+                finetuning_scheduler=self.finetuning_scheduler,
                 loader_generator=generator)
         info.update(independent_member_rng=True, minibatch_seed=training_seed)
         self.finetuning_history_.append(info)

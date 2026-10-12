@@ -290,6 +290,7 @@ def fine_tune_main_network(
     scheduler_min_lr=6e-7,
     validation_metric='auto',
     training_info=None,
+    finetuning_scheduler='cosine',
     loader_generator=None,
 ):
     main_model = MainNetworkTrainable(
@@ -307,14 +308,20 @@ def fine_tune_main_network(
         raise ValueError('Training data, max_epochs and patience_epochs must be positive')
     if optimize_steps is not None and optimize_steps < 0:
         raise ValueError('optimize_steps must be nonnegative or None')
-    if not 0 <= finetuning_dropout < 1 or gradient_clip_norm <= 0:
+    if not 0 <= finetuning_dropout < 1 or (gradient_clip_norm is not None and gradient_clip_norm <= 0):
         raise ValueError('Invalid dropout or gradient_clip_norm')
     if not 0 <= scheduler_min_lr <= cfg.lr or cooldown_checks < 0:
         raise ValueError('Invalid scheduler_min_lr or cooldown_checks')
     epochs = (max_epochs if optimize_steps is None else
               min(max_epochs, max(1, math.ceil(optimize_steps / len(dataloader)))))
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=epochs, eta_min=scheduler_min_lr)
+    if finetuning_scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs, eta_min=scheduler_min_lr)
+    elif finetuning_scheduler == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.1, patience=10)
+    else:
+        raise ValueError('finetuning_scheduler must be cosine or plateau')
     metric = {'auto': 'auc' if n_classes == 2 else 'log_loss',
               'auc': 'auc', 'roc_auc': 'auc', 'log_loss': 'log_loss',
               'logloss': 'log_loss'}.get(validation_metric)
@@ -392,9 +399,12 @@ def fine_tune_main_network(
             if not torch.isfinite(loss):
                 raise ValueError('Nonfinite training loss during fine-tuning')
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(main_model.parameters(), gradient_clip_norm,
-                                           error_if_nonfinite=True, foreach=False)
+            if gradient_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(main_model.parameters(), gradient_clip_norm,
+                                               error_if_nonfinite=True, foreach=False)
             optimizer.step()
+            if finetuning_scheduler == 'plateau':
+                scheduler.step(loss.item())
             step += 1
             capped = optimize_steps is not None and step >= optimize_steps
             if X_val is not None and (batch % interval == 0 or batch == len(dataloader) or capped):
@@ -406,7 +416,8 @@ def fine_tune_main_network(
                 stop_reason = 'max_updates'
                 break
         epochs_done = epoch + 1
-        scheduler.step()
+        if finetuning_scheduler == 'cosine':
+            scheduler.step()
         if stop_reason != 'max_epochs':
             break
     if best_state is not None:
