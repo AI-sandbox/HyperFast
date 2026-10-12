@@ -291,8 +291,11 @@ def fine_tune_main_network(
     validation_metric='auto',
     training_info=None,
     finetuning_scheduler='cosine',
+    label_smoothing=0.,
     loader_generator=None,
 ):
+    if not 0 <= label_smoothing <= 1:
+        raise ValueError('label_smoothing must be between 0 and 1')
     main_model = MainNetworkTrainable(
         cfg, n_classes, rf, pca, main_network_layers, nn_bias,
         finetuning_dropout=finetuning_dropout,
@@ -300,7 +303,7 @@ def fine_tune_main_network(
     dataset = TensorDataset(X, y)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                             generator=loader_generator)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     optimizer = optim.AdamW(main_model.parameters(), lr=cfg.lr)
     if (X_val is None) != (y_val is None):
         raise ValueError('X_val and y_val must be supplied together')

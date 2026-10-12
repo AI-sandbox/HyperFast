@@ -59,10 +59,11 @@ print(f"Accuracy: {accuracy * 100:.2f}%")
 
 ```python
 param_grid = {
-    'n_ensemble': [8, 16, 32],
+    'n_ensemble': [16, 32],
     'batch_size': [1024, 2048],
     'nn_bias': [True, False],
     'stratify_sampling': [True, False],
+    'label_smoothing': [0.0, 0.05],
 }
 ```
 

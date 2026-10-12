@@ -56,6 +56,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         feature_bagging (bool): Indicates whether feature bagging should be performed when ensembling.
         feature_bagging_size (int): Size of the feature subset when performing feature bagging.
         cat_features (list or None): List of indices of categorical features.
+        label_smoothing (float): Training-target smoothing in [0, 1]; validation metrics remain unsmoothed.
     """
 
     def __init__(
@@ -84,6 +85,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         validation_fraction: float = 0.1,
         validation_metric: str = 'auto',
         finetuning_scheduler: str = 'cosine',
+        label_smoothing: float = 0.,
     ) -> None:
         self.device = device
         self.n_ensemble = n_ensemble
@@ -102,6 +104,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.finetuning_max_epochs = finetuning_max_epochs
         self.finetuning_lr = finetuning_lr
         self.finetuning_dropout = finetuning_dropout
+        self.label_smoothing = label_smoothing
         self.gradient_clip_norm = gradient_clip_norm
         self.scheduler_min_lr = scheduler_min_lr
         self.patience_epochs = patience_epochs
@@ -401,8 +404,9 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 gradient_clip_norm=self.gradient_clip_norm, scheduler_min_lr=self.scheduler_min_lr,
                 validation_metric=self.validation_metric, training_info=info,
                 finetuning_scheduler=self.finetuning_scheduler,
-                loader_generator=generator)
-        info.update(independent_member_rng=True, minibatch_seed=training_seed)
+                label_smoothing=self.label_smoothing, loader_generator=generator)
+        info.update(independent_member_rng=True, minibatch_seed=training_seed,
+                    label_smoothing=self.label_smoothing)
         self.finetuning_history_.append(info)
         return parts
 
