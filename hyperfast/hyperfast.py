@@ -30,6 +30,7 @@ from .utils import (
     forward_main_network,
     nn_bias_logits,
     fine_tune_main_network,
+    isolated_training_rng,
 )
 from .model import HyperFast
 
@@ -386,15 +387,19 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
     def _fine_tune_predictor(self, X, y, rf, pca, network, bias, X_ref, y_ref,
                              X_val, y_val):
         info = {}
-        parts = fine_tune_main_network(
-            self._cfg, X, y, self.n_classes_, rf, pca, network, bias,
-            self.device, self.optimize_steps, self.batch_size,
-            X_val=X_val, y_val=y_val, reference_X=X_ref, reference_y=y_ref,
-            nn_bias_mini_batches=self.nn_bias_mini_batches,
-            max_epochs=self.finetuning_max_epochs, patience_epochs=self.patience_epochs,
-            cooldown_checks=self.cooldown_checks, finetuning_dropout=self.finetuning_dropout,
-            gradient_clip_norm=self.gradient_clip_norm, scheduler_min_lr=self.scheduler_min_lr,
-            validation_metric=self.validation_metric, training_info=info)
+        training_seed = self.seed + 104729 * (len(self.finetuning_history_) + 1)
+        with isolated_training_rng(training_seed) as generator:
+            parts = fine_tune_main_network(
+                self._cfg, X, y, self.n_classes_, rf, pca, network, bias,
+                self.device, self.optimize_steps, self.batch_size,
+                X_val=X_val, y_val=y_val, reference_X=X_ref, reference_y=y_ref,
+                nn_bias_mini_batches=self.nn_bias_mini_batches,
+                max_epochs=self.finetuning_max_epochs, patience_epochs=self.patience_epochs,
+                cooldown_checks=self.cooldown_checks, finetuning_dropout=self.finetuning_dropout,
+                gradient_clip_norm=self.gradient_clip_norm, scheduler_min_lr=self.scheduler_min_lr,
+                validation_metric=self.validation_metric, training_info=info,
+                loader_generator=generator)
+        info.update(independent_member_rng=True, minibatch_seed=training_seed)
         self.finetuning_history_.append(info)
         return parts
 

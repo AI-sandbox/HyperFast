@@ -3,6 +3,7 @@ import random
 import numpy as np
 import math
 import warnings
+from contextlib import contextmanager
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,6 +20,21 @@ def seed_everything(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.set_num_threads(1)
+
+
+
+@contextmanager
+def isolated_training_rng(seed):
+    state = (random.getstate(), np.random.get_state(), torch.get_rng_state(),
+             torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None)
+    try:
+        yield torch.Generator().manual_seed(seed)
+    finally:
+        random.setstate(state[0])
+        np.random.set_state(state[1])
+        torch.set_rng_state(state[2])
+        if state[3] is not None:
+            torch.cuda.set_rng_state_all(state[3])
 
 
 def nn_bias_logits(
@@ -274,13 +290,15 @@ def fine_tune_main_network(
     scheduler_min_lr=6e-7,
     validation_metric='auto',
     training_info=None,
+    loader_generator=None,
 ):
     main_model = MainNetworkTrainable(
         cfg, n_classes, rf, pca, main_network_layers, nn_bias,
         finetuning_dropout=finetuning_dropout,
     ).to(device)
     dataset = TensorDataset(X, y)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                            generator=loader_generator)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(main_model.parameters(), lr=cfg.lr)
     if (X_val is None) != (y_val is None):
