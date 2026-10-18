@@ -58,12 +58,23 @@ print(f"Accuracy: {accuracy * 100:.2f}%")
 * :ok_hand: For slower but most accurate predictions, optimize the inference parameters of HyperFast for each dataset. In this case, we recommend the following search space:
 
 ```python
+from scipy.stats import loguniform, uniform
+
 param_grid = {
-    'n_ensemble': [16, 32],
+    'n_ensemble': [4, 8, 16, 32],
     'batch_size': [1024, 2048],
     'nn_bias': [True, False],
+    'nn_bias_scale': loguniform(0.01, 1.0),  # Only when nn_bias=True.
     'stratify_sampling': [True, False],
-    'label_smoothing': [0.0, 0.05],
+    'optimization': ['ensemble_optimize', None],  # Sampling weights: 9:1.
+    # Remaining parameters apply only when optimization is enabled.
+    'optimize_steps': [1, 4, 8, 16, 32, 64, 128, None],
+    'finetuning_lr': loguniform(1e-5, 3e-3),
+    'finetuning_dropout': uniform(0.0, 0.5),
+    'finetuning_weight_decay': loguniform(1e-6, 0.1),
+    'finetuning_parameter_scope': ['all', 'network', 'head'],  # Sampling weights: 8:1:1.
+    'finetuning_batch_size': [128, 256, 1024],
+    'label_smoothing': [0.0, 0.05, 0.1],
 }
 ```
 
@@ -73,6 +84,13 @@ Binary tasks use ROC-AUC and multiclass tasks use log loss. Validation rows are
 excluded from preprocessing fitting, weight generation, gradient updates, and
 nearest-neighbor references. Without an explicit validation set, fine-tuning
 reserves a stratified 10% holdout before preprocessing.
+
+### Controlling fine-tuning
+
+`finetuning_parameter_scope="all"` retains full predictor adaptation. Use
+`"network"` to freeze the random projection and PCA, or `"head"` to also freeze
+all hidden MLP layers. Enabled nearest-neighbor biases remain trainable.
+These options do not update the pretrained hypernetwork or checkpoint.
 
 ## License
 

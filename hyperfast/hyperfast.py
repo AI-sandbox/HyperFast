@@ -45,6 +45,8 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         n_ensemble (int): Number of ensemble models to use.
         batch_size (int): Size of the batch for weight prediction and ensembling.
         nn_bias (bool): Whether to use nearest neighbor bias.
+        nn_bias_neighbors (int): Number of neighbors in the class-probability correction.
+        nn_bias_scale (float): Initial nearest-neighbor correction strength in [0, 1].
         nn_bias_mini_batches (bool): Whether to use mini-batches of size 128 for nearest neighbor bias.
         optimization (str or None): Strategy for optimization, can be None, 'optimize', or 'ensemble_optimize'.
         optimize_steps (int or None): Optional fixed optimizer-update cap. By default,
@@ -57,6 +59,12 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         feature_bagging_size (int): Size of the feature subset when performing feature bagging.
         cat_features (list or None): List of indices of categorical features.
         label_smoothing (float): Training-target smoothing in [0, 1]; validation metrics remain unsmoothed.
+        finetuning_weight_decay (float): AdamW weight decay for trainable parameters.
+        finetuning_parameter_scope (str): 'all' adapts the full predictor; 'network'
+            retains its random projection and PCA; 'head' adapts only the output
+            layer. Enabled nearest-neighbor biases are trainable in every scope.
+        finetuning_batch_size (int or None): Training mini-batch size, independent
+            of the weight-generation context. None uses batch_size.
     """
 
     def __init__(
@@ -86,6 +94,11 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         validation_metric: str = 'auto',
         finetuning_scheduler: str = 'cosine',
         label_smoothing: float = 0.,
+        finetuning_weight_decay: float = 0.01,
+        finetuning_parameter_scope: str = 'all',
+        finetuning_batch_size: int | None = None,
+        nn_bias_scale: float = 1.,
+        nn_bias_neighbors: int = 1,
     ) -> None:
         self.device = device
         self.n_ensemble = n_ensemble
@@ -105,6 +118,11 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         self.finetuning_lr = finetuning_lr
         self.finetuning_dropout = finetuning_dropout
         self.label_smoothing = label_smoothing
+        self.finetuning_weight_decay = finetuning_weight_decay
+        self.finetuning_parameter_scope = finetuning_parameter_scope
+        self.finetuning_batch_size = finetuning_batch_size
+        self.nn_bias_scale = nn_bias_scale
+        self.nn_bias_neighbors = nn_bias_neighbors
         self.gradient_clip_norm = gradient_clip_norm
         self.scheduler_min_lr = scheduler_min_lr
         self.patience_epochs = patience_epochs
@@ -126,6 +144,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         cfg.device = device
         cfg.torch_pca = torch_pca
         cfg.nn_bias = nn_bias
+        cfg.nn_bias_neighbors = self.nn_bias_neighbors
         return cfg
 
     def _initialize_model(self, cfg: SimpleNamespace) -> HyperFast:
@@ -391,12 +410,15 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
 
     def _fine_tune_predictor(self, X, y, rf, pca, network, bias, X_ref, y_ref,
                              X_val, y_val):
+        batch_size = self.batch_size if self.finetuning_batch_size is None else self.finetuning_batch_size
+        if isinstance(batch_size, bool) or not isinstance(batch_size, (int, np.integer)) or batch_size < 1:
+            raise ValueError('finetuning_batch_size must be a positive integer or None')
         info = {}
         training_seed = self.seed + 104729 * (len(self.finetuning_history_) + 1)
         with isolated_training_rng(training_seed) as generator:
             parts = fine_tune_main_network(
                 self._cfg, X, y, self.n_classes_, rf, pca, network, bias,
-                self.device, self.optimize_steps, self.batch_size,
+                self.device, self.optimize_steps, batch_size,
                 X_val=X_val, y_val=y_val, reference_X=X_ref, reference_y=y_ref,
                 nn_bias_mini_batches=self.nn_bias_mini_batches,
                 max_epochs=self.finetuning_max_epochs, patience_epochs=self.patience_epochs,
@@ -404,9 +426,11 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 gradient_clip_norm=self.gradient_clip_norm, scheduler_min_lr=self.scheduler_min_lr,
                 validation_metric=self.validation_metric, training_info=info,
                 finetuning_scheduler=self.finetuning_scheduler,
-                label_smoothing=self.label_smoothing, loader_generator=generator)
+                label_smoothing=self.label_smoothing, loader_generator=generator,
+                finetuning_weight_decay=self.finetuning_weight_decay,
+                finetuning_parameter_scope=self.finetuning_parameter_scope)
         info.update(independent_member_rng=True, minibatch_seed=training_seed,
-                    label_smoothing=self.label_smoothing)
+                    label_smoothing=self.label_smoothing, finetuning_batch_size=batch_size)
         self.finetuning_history_.append(info)
         return parts
 
@@ -431,6 +455,12 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
             raise ValueError('optimization="optimize" requires n_ensemble=1')
         if self.n_ensemble < 1 or self.batch_size < 1 or self.finetuning_lr <= 0:
             raise ValueError('n_ensemble, batch_size and finetuning_lr must be positive')
+        if (isinstance(self.nn_bias_neighbors, bool) or
+                not isinstance(self.nn_bias_neighbors, int) or self.nn_bias_neighbors < 1):
+            raise ValueError("nn_bias_neighbors must be a positive integer")
+        self._cfg.nn_bias_neighbors = self.nn_bias_neighbors
+        if not math.isfinite(self.nn_bias_scale) or not 0 <= self.nn_bias_scale <= 1:
+            raise ValueError('nn_bias_scale must be finite and between 0 and 1')
         X, y, X_val, y_val = self._validation_split(X, y, eval_set)
         X, y = self._preprocess_fitting_data(X, y)
         self._cfg.lr = self.finetuning_lr
@@ -456,6 +486,8 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                 y_context = torch.repeat_interleave(y_context, repeats, dim=0)
             with torch.no_grad():
                 rf, pca, main_network, nnbias = self._model(X_context, y_context, self.n_classes_)
+            # Scale an independent copy, never the cached hypernetwork parameter.
+            nnbias = nnbias.detach().clone() * self.nn_bias_scale
             if self.optimization == "ensemble_optimize":
                 X_fit = X[:, self.selected_features[n]] if self.feature_bagging else X
                 X_eval = (X_val[:, self.selected_features[n]]
@@ -529,11 +561,11 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
                         for bb, bias in enumerate(nnbias):
                             if bb == 0:
                                 outputs = nn_bias_logits(
-                                    outputs, orig_X_, X_pred, y_pred, bias, self.n_classes_, self.nn_bias_mini_batches
+                                    outputs, orig_X_, X_pred, y_pred, bias, self.n_classes_, self.nn_bias_mini_batches, self.nn_bias_neighbors
                                 )
                             elif bb == 1:
                                 outputs = nn_bias_logits(
-                                    outputs, intermediate_activations, intermediate_activations_pred, y_pred, bias, self.n_classes_, self.nn_bias_mini_batches,
+                                    outputs, intermediate_activations, intermediate_activations_pred, y_pred, bias, self.n_classes_, self.nn_bias_mini_batches, self.nn_bias_neighbors,
                                 )
 
                     predicted = F.softmax(outputs, dim=1)
