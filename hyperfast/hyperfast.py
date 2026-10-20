@@ -214,7 +214,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         y = np.array(y).copy()
         self._cat_features = self.cat_features if self.cat_features is not None else []
         # Impute missing values for numerical features with the mean
-        self._num_imputer = SimpleImputer(missing_values=np.nan, strategy="mean")
+        self._num_imputer = SimpleImputer(missing_values=np.nan, strategy="mean", keep_empty_features=True)
         if len(x.shape) == 2:
             self._all_feature_idxs = np.arange(x.shape[1])
         else:
@@ -231,7 +231,7 @@ class HyperFastClassifier(BaseEstimator, ClassifierMixin):
         if len(self._cat_features) > 0:
             # Impute missing values for categorical features with the most frequent category
             self.cat_imputer = SimpleImputer(
-                missing_values=np.nan, strategy="most_frequent"
+                missing_values=np.nan, strategy="most_frequent", keep_empty_features=True
             )
             self.cat_imputer.fit(x[:, self._cat_features])
             x[:, self._cat_features] = self.cat_imputer.transform(
